@@ -440,31 +440,47 @@ if ((!EMB || PK) && "serviceWorker" in navigator && /^https?:$/.test(location.pr
   }
   const pick = msg => {
     say(`<div style="font-size:1.3rem;color:#e8edf7;margin-bottom:8px">أرشيف الأشعة</div>${msg || "اختار ملف الأرشيف <b>XRay Archive.xrpack</b> من على الجهاز."}
-      <label style="display:block;margin-top:18px;background:#3b82f6;color:#fff;padding:14px 22px;border-radius:14px;font-size:1.1rem;cursor:pointer">اختيار ملف الأرشيف
-      <input id="pk" type="file" style="display:none"></label>
-      ${root ? '<div style="font-size:.8rem;margin-top:12px">هيتحفظ على الجهاز، ومش هتحتاج تختاره تاني.</div>' : ""}`);
-    document.getElementById("pk").onchange = async e => {
-      const file = e.target.files[0]; if (!file) return;
+      <div style="margin-top:18px;background:#3b82f6;border-radius:14px;padding:14px">
+      <input id="pk" type="file" style="width:100%;color:#fff;font-size:1rem"></div>
+      <div id="pkst" style="font-size:.9rem;margin-top:12px;min-height:1.5em"></div>
+      ${root ? '<div style="font-size:.8rem;margin-top:6px">هيتحفظ على الجهاز، ومش هتحتاج تختاره تاني.</div>' : ""}`);
+    const st = t => { const d = document.getElementById("pkst"); if (d) d.textContent = t; };
+    const onFile = async file => {
+      if (!file) return st("ما اتختارش ملف.");
       try {
+        st("جاري قراءة الملف… (" + Math.round(file.size / 1048576) + " MB)");
         const head = new TextDecoder().decode(await file.slice(0, 8).arrayBuffer());
-        if (head !== "XRPACK1\n") return pick('<span style="color:#fca5a5">ده مش ملف الأرشيف. اختار الملف اللي آخره xrpack.</span>');
-        if (root) {   // keep a private copy so the app opens by itself next time
-          try {
-            if (navigator.storage.persist) navigator.storage.persist();
-            const h = await root.getFileHandle("archive.xrpack", {create: true});
-            const w = await h.createWritable();
-            const CH = 8 * 1048576;
-            for (let o = 0; o < file.size; o += CH) {
-              await w.write(file.slice(o, o + CH));
-              say(`جاري حفظ الأرشيف على الجهاز… ${Math.round(Math.min(o + CH, file.size) / file.size * 100)}٪<br><span style="font-size:.8rem">مرة واحدة بس</span>`);
-            }
-            await w.close();
-            return await openPack(await h.getFile(), true);
-          } catch (x) { try { await root.removeEntry("archive.xrpack"); } catch (y) {} }
-        }
-        await openPack(file, false);
-      } catch (x) { pick('<span style="color:#fca5a5">الملف ما اتفتحش. جرّب تختاره تاني.</span>'); }
+        if (head !== "XRPACK1\n") return pick('<span style="color:#fca5a5">ده مش ملف الأرشيف (' + esc(file.name) + '). اختار الملف اللي آخره xrpack.</span>');
+        await openPack(file, false);          // show the archive right away
+        if (root) saveCopy(file);             // then keep a private copy in the background
+      } catch (x) { pick('<span style="color:#fca5a5">الملف ما اتفتحش: ' + esc((x && (x.name + " " + x.message)) || x) + '</span>'); }
     };
+    const inp = document.getElementById("pk");
+    inp.onchange = e => onFile(e.target.files[0]);
+    boot.ondragover = e => e.preventDefault();
+    boot.ondrop = e => { e.preventDefault(); onFile(e.dataTransfer.files[0]); };
   };
+  const esc = s => String(s).replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
+  async function saveCopy(file) {
+    const t = document.createElement("div");
+    t.style.cssText = "position:fixed;bottom:10px;left:10px;z-index:99;background:#1e293b;color:#cbd5e1;padding:6px 12px;border-radius:10px;font-size:.8rem;direction:rtl";
+    document.body.appendChild(t);
+    try {
+      if (navigator.storage.persist) navigator.storage.persist();
+      const h = await root.getFileHandle("archive.xrpack", {create: true});
+      const w = await h.createWritable();
+      const CH = 4 * 1048576;
+      for (let o = 0; o < file.size; o += CH) {
+        await w.write(file.slice(o, o + CH));
+        t.textContent = "جاري حفظ الأرشيف على الجهاز… " + Math.round(Math.min(o + CH, file.size) / file.size * 100) + "٪";
+      }
+      await w.close();
+      t.textContent = "الأرشيف اتحفظ ✔ المرة الجاية هيفتح لوحده";
+    } catch (x) {
+      try { await root.removeEntry("archive.xrpack"); } catch (y) {}
+      t.textContent = "الأرشيف ما اتحفظش على الجهاز (" + ((x && x.name) || "خطأ") + ") — هتختاره كل مرة";
+    }
+    setTimeout(() => t.remove(), 6000);
+  }
   pick();
 })();
