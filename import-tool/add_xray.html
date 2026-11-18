@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="ar" dir="rtl" translate="no">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="google" content="notranslate">
+<title>إضافة أشعة</title>
+<style>
+:root{--bg:#0b1220;--panel:#111a2e;--panel2:#18233d;--line:#243252;--text:#e8edf7;--muted:#93a1bd;
+  --accent:#3b82f6;--accent2:#60a5fa;--ok:#22c55e;--warn:#f59e0b;--bad:#ef4444}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font-family:"Segoe UI",Tahoma,"Noto Sans Arabic",system-ui,sans-serif;font-size:16px;line-height:1.5}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+[hidden]{display:none!important}
+.wrap{max-width:980px;margin:0 auto;padding:14px 16px 90px}
+header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+h1{font-size:1.35rem;margin:0;flex:1}
+.chip{font-size:.78rem;padding:3px 10px;border-radius:99px;background:var(--panel2);color:var(--muted);white-space:nowrap}
+.chip.ok{background:#0f3a24;color:#86efac}.chip.warn{background:#3d2d0a;color:#fcd34d}.chip.bad{background:#3f1515;color:#fca5a5}
+.btn{border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:8px 14px}
+.btn:hover{border-color:var(--accent2)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.btn.pri:disabled{opacity:.5;cursor:default}
+.btn.sm{padding:4px 10px;font-size:.85rem;border-radius:9px}
+.muted{color:var(--muted);font-size:.88rem}
+.ltr{direction:ltr;unicode-bidi:embed}
+
+#drop{border:2px dashed var(--line);border-radius:18px;background:var(--panel);padding:34px 16px;text-align:center;
+  transition:border-color .15s,background .15s;cursor:pointer}
+#drop .big{font-size:1.35rem;font-weight:600;margin:6px 0}
+#drop .ico{font-size:2.6rem}
+body.over #drop{border-color:var(--accent2);background:#13213f}
+
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px}
+.panel h2{font-size:1.1rem;margin:0 0 10px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.row label{min-width:150px}
+.row input[type=text]{flex:1;min-width:220px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+
+#queue{display:flex;flex-direction:column;gap:12px;margin-top:14px}
+.item{display:grid;grid-template-columns:170px 1fr;gap:14px;background:var(--panel);border:1px solid var(--line);
+  border-radius:16px;padding:12px;position:relative;overflow:hidden}
+.item .thumb{aspect-ratio:4/3;background:#05080f;border-radius:10px;display:grid;place-items:center;overflow:hidden;font-size:2rem}
+.item .thumb img{width:100%;height:100%;object-fit:contain;display:block}
+.item .fn{font-size:.85rem;color:var(--muted);direction:ltr;text-align:right;word-break:break-all}
+.item .st{font-size:.92rem;margin:2px 0 8px}
+.fields{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.fields input{flex:1;min-width:200px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:1.08rem;font-weight:600}
+.fields input:focus{outline:none;border-color:var(--accent)}
+.fields select{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:9px 8px}
+.cands{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 2px}
+.cand{border:1px solid var(--line);background:var(--panel2);border-radius:99px;padding:3px 4px 3px 12px;font-size:.88rem;display:inline-flex;gap:6px;align-items:center}
+.cand.on{border-color:var(--accent);background:#16305e}
+.cand small{color:var(--muted)}
+.cand .x{border:0;background:transparent;color:var(--muted);padding:0 6px;font-size:.8rem}
+.cand .x:hover{color:#fca5a5}
+.dest{font-size:.88rem;color:var(--muted);margin-top:8px}
+.dest b{color:var(--text);font-weight:600}
+.tag{font-size:.75rem;padding:1px 8px;border-radius:99px;margin-inline-start:6px}
+.tag.new{background:#3d2d0a;color:#fcd34d}.tag.old{background:#0f3a24;color:#86efac}
+.acts{display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap}
+.bar{position:absolute;bottom:0;right:0;height:4px;background:var(--accent);transition:width linear}
+.item.saved{grid-template-columns:90px 1fr;border-color:#1f5a37;opacity:.92}
+.item.saved .thumb{font-size:1.2rem}
+.item.err{border-color:#6b2121}
+details.ocr{margin-top:6px}
+details.ocr summary{cursor:pointer;color:var(--muted);font-size:.8rem}
+details.ocr pre{white-space:pre-wrap;font-size:.8rem;color:var(--muted);max-height:160px;overflow:auto;background:var(--bg);padding:8px;border-radius:8px;direction:ltr;text-align:left}
+
+#foot{position:fixed;bottom:0;inset-inline:0;background:#0d1628ee;border-top:1px solid var(--line);padding:10px 16px;
+  display:flex;gap:10px;align-items:center;flex-wrap:wrap;backdrop-filter:blur(6px)}
+#foot .grow{flex:1}
+.spin{display:inline-block;width:14px;height:14px;border:2px solid var(--muted);border-top-color:transparent;border-radius:50%;animation:sp 1s linear infinite;vertical-align:-2px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.switch{display:inline-flex;gap:6px;align-items:center;font-size:.9rem;color:var(--muted)}
+@media (max-width:640px){.item{grid-template-columns:1fr}.row label{min-width:0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>📥 إضافة أشعة للأرشيف</h1>
+    <span id="ocrChip" class="chip"></span>
+    <label class="switch"><input type="checkbox" id="autoSave"> حفظ تلقائي لما الاسم يكون واضح</label>
+    <button class="btn sm" id="openRoot" type="button">📂 فولدر الأشعة</button>
+    <button class="btn sm" id="setBtn" type="button">⚙️ الإعدادات</button>
+  </header>
+
+  <section id="setup" class="panel" hidden>
+    <h2>الإعدادات</h2>
+    <div class="row"><label>فولدر الأشعة الأساسي</label>
+      <input type="text" id="cRoot" class="ltr" placeholder="D:\X-Ray">
+      <button class="btn sm" type="button" data-pick="folder">اختار…</button></div>
+    <div class="muted" id="rootInfo"></div>
+    <div class="row"><label>ملف تحديث الأرشيف</label>
+      <input type="text" id="cRebuild" class="ltr" placeholder="D:\XRay Archive\rebuild.bat">
+      <button class="btn sm" type="button" data-pick="file">اختار…</button></div>
+    <div class="muted">ده الملف اللي بيعمل الأرشيف من جديد (rebuild.bat). بيشتغل لوحده بعد كل حفظ.</div>
+    <div class="row"><label>كلام مكتوب على كل الأشعة<br><span class="muted">(اسم العيادة / الدكتور) — مش اسم مريض</span></label>
+      <input type="text" id="cIgnore" placeholder="مثلاً: اسم العيادة، اسم الدكتور — افصل بينهم بـ ،"></div>
+    <div class="row"><label>الحفظ التلقائي بعد</label>
+      <input type="number" id="cSecs" min="1" max="30" style="width:80px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:6px"> ثانية</div>
+    <div class="row"><button class="btn pri" id="cSave" type="button">حفظ الإعدادات</button><span id="cMsg" class="muted"></span></div>
+  </section>
+
+  <div id="drop" tabindex="0">
+    <div class="ico">🦷</div>
+    <div class="big">اسحب الأشعة الجديدة وحطها هنا</div>
+    <div class="muted">أو دوس هنا عشان تختار الملفات · أو الصق صورة (Ctrl+V)<br>
+      البرنامج هيقرا اسم المريض من على الأشعة ويحطها في <b>فولدر السنة ← فولدر المريض</b> ويحدّث الأرشيف.</div>
+    <input type="file" id="pick" multiple hidden>
+  </div>
+
+  <div id="queue"></div>
+</div>
+
+<div id="foot">
+  <span id="rbIcon"></span><span id="rbMsg" class="grow muted"></span>
+  <button class="btn sm" id="rbNow" type="button">تحديث الأرشيف دلوقتي</button>
+</div>
+
+<datalist id="plist"></datalist>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const num = n => String(n).replace(/\d/g, d => "٠١٢٣٤٥٦٧٨٩"[d]);
+const AR = {"أ":"ا","إ":"ا","آ":"ا","ٱ":"ا","ى":"ي","ئ":"ي","ؤ":"و","ة":"ه"};
+const key = s => (s || "").normalize("NFKC").toLowerCase()
+  .replace(/[\u064B-\u065F\u0670\u0640]/g, "").replace(/[أإآٱىئؤة]/g, c => AR[c])
+  .replace(/[٠-٩]/g, d => d.charCodeAt(0) - 1632)
+  .replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+const cleanName = s => {
+  s = (s || "").normalize("NFKC").replace(/\^/g, " ").replace(/[<>:"/\\|?*\x00-\x1f]/g, " ").replace(/\s+/g, " ").replace(/^[ .\-_,]+|[ .\-_,]+$/g, "");
+  if (s && (s.toUpperCase() === s || s.toLowerCase() === s) && /[A-Za-z]/.test(s)) s = s.split(" ").map(w => w[0] + w.slice(1).toLowerCase()).join(" ");
+  return s;
+};
+const fmtSize = b => b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
+const SRC = {dicom: "من بيانات الأشعة", label: "مكتوب جنب «الاسم»", patient: "مريض موجود في الأرشيف", ocr: "مكتوب على الأشعة",
+             meta: "من بيانات الصورة", filename: "من اسم الملف"};
+
+let S = null;            // server state
+let byKey = new Map();   // name key -> {n, years:[], count}
+let lastName = "";       // last saved name (for "same patient")
+
+async function api(path, body, raw) {
+  const opt = {method: body === undefined ? "GET" : "POST", headers: {"X-XRay": "1"}};
+  if (body !== undefined) {
+    if (raw) { opt.body = body.data; Object.assign(opt.headers, body.headers); }
+    else { opt.body = JSON.stringify(body); opt.headers["Content-Type"] = "application/json"; }
+  }
+  const r = await fetch(path, opt);
+  const j = await r.json().catch(() => ({error: "رد غير مفهوم من البرنامج"}));
+  if (!r.ok) throw new Error(j.error || ("خطأ " + r.status));
+  return j;
+}
+
+function setState(s) {
+  S = s;
+  byKey = new Map();
+  for (const p of s.patients) {
+    const k = key(p.n); let e = byKey.get(k);
+    if (!e) byKey.set(k, e = {n: p.n, years: [], count: 0});
+    e.years.push(p.y); e.count += p.c;
+    if (p.y >= Math.max(...e.years)) e.n = p.n;
+  }
+  const names = [...new Set([...byKey.values()].map(e => e.n))].sort((a, b) => a.localeCompare(b, "ar"));
+  $("#plist").innerHTML = names.map(n => `<option value="${esc(n)}">`).join("");
+  $("#autoSave").checked = !!s.auto_save;
+  const oc = $("#ocrChip");
+  if (s.ocr) { oc.textContent = "قراءة الأسماء: " + s.ocr; oc.className = "chip ok"; }
+  else { oc.textContent = "قراءة الأسماء مش متاحة — هتكتب الاسم بإيدك"; oc.className = "chip warn"; }
+  $("#cRoot").value = s.xray_root || ""; $("#cRebuild").value = s.rebuild_cmd || "";
+  $("#cIgnore").value = (s.ignore_words || []).join("، "); $("#cSecs").value = s.auto_save_seconds || 5;
+  const ny = Object.keys(s.year_folders || {}).length;
+  $("#rootInfo").textContent = s.configured ? `لقيت ${num(ny)} فولدر سنة و ${num(s.patients.length)} فولدر مريض.` : "لسه ما اتحددش فولدر الأشعة.";
+  if (!s.configured) $("#setup").hidden = false;
+  for (const it of items.values()) if (!it.done) refreshDest(it);
+  showRebuild(s.rebuild);
+}
+
+/* ---------- settings ---------- */
+$("#setBtn").onclick = () => { $("#setup").hidden = !$("#setup").hidden; };
+$("#openRoot").onclick = () => api("/api/open", {});
+document.querySelectorAll("[data-pick]").forEach(b => b.onclick = async () => {
+  const kind = b.dataset.pick;
+  b.disabled = true;
+  try { const r = await api("/api/pick", {kind}); if (r.path) (kind === "folder" ? $("#cRoot") : $("#cRebuild")).value = r.path; }
+  catch (e) {} finally { b.disabled = false; }
+});
+$("#cSave").onclick = async () => {
+  $("#cMsg").textContent = "";
+  try {
+    const s = await api("/api/config", {xray_root: $("#cRoot").value, rebuild_cmd: $("#cRebuild").value,
+      ignore_words: $("#cIgnore").value.split(/[،,\n]/).map(x => x.trim()).filter(Boolean), auto_save_seconds: +$("#cSecs").value || 5});
+    setState(s);
+    $("#cMsg").textContent = "اتحفظ ✔"; $("#cMsg").style.color = "#86efac";
+    if (s.configured) setTimeout(() => { $("#setup").hidden = true; $("#cMsg").textContent = ""; }, 900);
+  } catch (e) { $("#cMsg").textContent = e.message; $("#cMsg").style.color = "#fca5a5"; }
+};
+$("#autoSave").onchange = e => api("/api/config", {auto_save: e.target.checked}).then(setState).catch(() => {});
+
+/* ---------- adding files ---------- */
+const items = new Map();
+let seq = 0, uploading = Promise.resolve();
+
+function addFiles(list) {
+  for (const f of list) {
+    if (!f || !f.size) continue;
+    const it = {local: ++seq, file: f, done: false};
+    items.set(it.local, it);
+    renderShell(it);
+    uploading = uploading.then(() => upload(it));   // one at a time, in order
+  }
+}
+
+function renderShell(it) {
+  const el = document.createElement("div");
+  el.className = "item"; it.el = el;
+  const isImg = /^image\/(jpeg|png|gif|webp|bmp)/.test(it.file.type);
+  it.thumb = isImg ? URL.createObjectURL(it.file) : "";
+  el.innerHTML = `<div class="thumb">${it.thumb ? `<img src="${it.thumb}" alt="">` : "🩻"}</div>
+    <div class="body"><div class="fn">${esc(it.file.name)} · ${fmtSize(it.file.size)}</div>
+    <div class="st"><span class="spin"></span> جاري قراءة اسم المريض من على الأشعة…</div></div>`;
+  $("#queue").prepend(el);
+}
+
+async function upload(it) {
+  try {
+    const r = await api("/api/analyze", {data: it.file, headers: {
+      "X-File-Name": encodeURIComponent(it.file.name || "xray.jpg"), "X-Last-Modified": String(it.file.lastModified || 0),
+      "Content-Type": "application/octet-stream"}}, true);
+    if (it.removed) { api("/api/discard", {id: r.id}).catch(() => {}); return; }
+    it.r = r; it.id = r.id;
+    renderForm(it);
+  } catch (e) {
+    it.el.classList.add("err");
+    it.el.querySelector(".st").innerHTML = `<span style="color:#fca5a5">ما قدرتش أقرا الملف: ${esc(e.message)}</span>
+      <button class="btn sm" type="button">شيل</button>`;
+    it.el.querySelector(".st button").onclick = () => { it.el.remove(); items.delete(it.local); };
+  }
+}
+
+function renderForm(it) {
+  const r = it.r, el = it.el;
+  if (r.preview && !it.thumb) el.querySelector(".thumb").innerHTML = `<img src="${r.preview}" alt="">`;
+  const years = [...new Set([r.year, ...S.years])].sort().reverse();
+  let status;
+  if (r.best && r.confident) status = `<span style="color:#86efac">✔ لقيت الاسم</span>`;
+  else if (r.best) status = `<span style="color:#fcd34d">⚠ ده اللي قدرت أقراه — اتأكد من الاسم</span>`;
+  else status = `<span style="color:#fcd34d">✎ ما لقيتش اسم مكتوب — اكتب اسم المريض</span>`;
+  if (r.note) status += ` <span class="muted">(${esc(r.note)})</span>`;
+  const cands = r.candidates.map((c, i) => `<span class="cand" data-i="${i}" title="${esc(SRC[c.source] || "")}${c.read_as ? " — اتقرا: " + esc(c.read_as) : ""}">
+      <span class="pickc">${esc(c.name)}</span><small>${esc(SRC[c.source] || "")}</small>
+      ${c.source === "ocr" || c.source === "label" ? `<button class="x" type="button" title="ده مش اسم مريض — تجاهله دايماً">✕</button>` : ""}</span>`).join("");
+  const same = lastName && !r.candidates.some(c => key(c.name) === key(lastName))
+    ? `<span class="cand" data-same="1"><span class="pickc">${esc(lastName)}</span><small>نفس المريض اللي قبله</small></span>` : "";
+  el.querySelector(".body").innerHTML = `
+    <div class="fn">${esc(r.filename)} · ${fmtSize(r.size)}</div>
+    <div class="st">${status}</div>
+    <div class="fields">
+      <input type="text" class="nm" list="plist" placeholder="اسم المريض" value="${esc(r.best)}" autocomplete="off">
+      <select class="yr" title="السنة">${years.map(y => `<option value="${y}"${y === r.year ? " selected" : ""}>${num(y)}</option>`).join("")}<option value="other">سنة تانية…</option></select>
+    </div>
+    <div class="muted" style="margin-top:4px">السنة: ${esc(r.year_source || "")}</div>
+    ${cands || same ? `<div class="cands">${cands}${same}</div>` : ""}
+    <div class="dest"></div>
+    <div class="acts">
+      <button class="btn pri save" type="button">💾 حفظ في الأرشيف</button>
+      <button class="btn rm" type="button">شيل</button>
+      <span class="cd muted"></span>
+    </div>
+    ${r.ocr_text && r.ocr_text.length ? `<details class="ocr"><summary>الكلام اللي اتقرا من على الأشعة</summary><pre>${esc(r.ocr_text.join("\n"))}</pre></details>` : ""}`;
+  el.insertAdjacentHTML("beforeend", '<div class="bar" style="width:0"></div>');
+  const nm = el.querySelector(".nm"), yr = el.querySelector(".yr");
+  nm.addEventListener("input", () => { stopCountdown(it); refreshDest(it); });
+  nm.addEventListener("keydown", e => { if (e.key === "Enter") save(it); });
+  nm.addEventListener("focus", () => stopCountdown(it));
+  yr.addEventListener("change", () => {
+    stopCountdown(it);
+    if (yr.value === "other") {
+      const y = (prompt("اكتب السنة (مثلاً 2019):") || "").replace(/[٠-٩]/g, d => d.charCodeAt(0) - 1632).trim();
+      if (/^(19|20)\d\d$/.test(y)) { yr.insertAdjacentHTML("afterbegin", `<option value="${y}">${num(y)}</option>`); yr.value = y; }
+      else yr.value = r.year;
+    }
+    refreshDest(it);
+  });
+  el.querySelectorAll(".cand").forEach(c => c.addEventListener("click", async e => {
+    if (e.target.closest(".x")) {
+      const cand = r.candidates[+c.dataset.i];
+      if (!confirm(`«${cand.name}» مش اسم مريض (مكتوب على كل الأشعة)؟\nالبرنامج هيتجاهله بعد كده.`)) return;
+      await api("/api/ignore", {text: cand.read_as || cand.name}).catch(() => {});
+      if (key(nm.value) === key(cand.name)) nm.value = "";
+      c.remove(); stopCountdown(it); refreshDest(it); return;
+    }
+    stopCountdown(it);
+    nm.value = c.dataset.same ? lastName : r.candidates[+c.dataset.i].name;
+    refreshDest(it);
+  }));
+  el.querySelector(".save").onclick = () => save(it);
+  el.querySelector(".rm").onclick = () => remove(it);
+  refreshDest(it);
+  if (r.confident && r.best && S.auto_save) startCountdown(it);
+  else if (!r.best) nm.focus();
+}
+
+function refreshDest(it) {
+  if (!it.el || !it.r || it.done) return;
+  const nm = it.el.querySelector(".nm"), yr = it.el.querySelector(".yr"), d = it.el.querySelector(".dest");
+  if (!nm) return;
+  const name = cleanName(nm.value), y = yr.value;
+  it.el.querySelectorAll(".cand").forEach(c => c.classList.toggle("on", key(c.querySelector(".pickc").textContent) === key(name)));
+  it.el.querySelector(".save").disabled = !name || !S.configured;
+  if (!S.configured) { d.innerHTML = `<span style="color:#fca5a5">حدد فولدر الأشعة الأساسي من الإعدادات الأول.</span>`; return; }
+  if (!name) { d.textContent = ""; return; }
+  const e = byKey.get(key(name));
+  const sep = S.sep || "\\";
+  const yf = (S.year_folders || {})[y] || y;
+  let tag;
+  if (e && e.years.includes(y)) tag = `<span class="tag old">مريض موجود · ${num(e.count)} ملف</span>`;
+  else if (e) tag = `<span class="tag old">مريض موجود في ${e.years.map(num).join("، ")}</span><span class="tag new">أول أشعة له في ${num(y)}</span>`;
+  else tag = `<span class="tag new">مريض جديد</span>`;
+  const folder = e ? e.n : name;
+  d.innerHTML = `هيتحفظ في: <b class="ltr">${esc(yf)}${sep}${esc(folder)}${sep}${esc(it.r.filename)}</b>${tag}`;
+}
+
+function startCountdown(it) {
+  const secs = Math.max(1, S.auto_save_seconds || 5), bar = it.el.querySelector(".bar"), cd = it.el.querySelector(".cd");
+  let left = secs;
+  cd.innerHTML = `هيتحفظ لوحده خلال ${num(left)} ث — <a href="#" style="color:var(--accent2)">استنى</a>`;
+  cd.querySelector("a").onclick = e => { e.preventDefault(); stopCountdown(it); };
+  requestAnimationFrame(() => { bar.style.transitionDuration = secs + "s"; bar.style.width = "100%"; });
+  it.timer = setInterval(() => {
+    left--;
+    if (left <= 0) { stopCountdown(it); save(it); return; }
+    const t = cd.firstChild; if (t) t.textContent = `هيتحفظ لوحده خلال ${num(left)} ث — `;
+  }, 1000);
+}
+function stopCountdown(it) {
+  if (!it.timer) return;
+  clearInterval(it.timer); it.timer = null;
+  const bar = it.el.querySelector(".bar"); if (bar) { bar.style.transitionDuration = "0s"; bar.style.width = "0"; }
+  const cd = it.el.querySelector(".cd"); if (cd) cd.textContent = "";
+}
+
+async function save(it) {
+  if (it.saving || it.done) return;
+  stopCountdown(it);
+  const nm = it.el.querySelector(".nm"), y = it.el.querySelector(".yr").value;
+  const name = cleanName(nm.value);
+  if (!name) { nm.focus(); return; }
+  it.saving = true;
+  const btn = it.el.querySelector(".save"); btn.disabled = true; btn.innerHTML = '<span class="spin"></span> جاري الحفظ…';
+  try {
+    const r = await api("/api/save", {id: it.id, name, year: y});
+    it.done = true; lastName = r.folder || name;
+    URL.revokeObjectURL(it.thumb || "");
+    it.el.className = "item saved";
+    it.el.innerHTML = `<div class="thumb">${r.duplicate ? "♻️" : "✅"}</div><div class="body">
+      <div><b>${esc(r.folder || name)}</b> · ${num(y)} ${r.new_patient ? '<span class="tag new">مريض جديد</span>' : ""}</div>
+      <div class="muted">${r.duplicate ? "الأشعة دي موجودة أصلاً في فولدر المريض — ما اتنسختش تاني:" : "اتحفظت في:"} <span class="ltr">${esc(r.rel)}</span>
+      <a href="#" class="show" style="color:var(--accent2)">وريني</a></div></div>`;
+    it.el.querySelector(".show").onclick = e => { e.preventDefault(); api("/api/open", {path: r.path}); };
+    api("/api/state").then(setState).catch(() => {});
+    if (r.rebuild) showRebuild(r.rebuild);
+    pollRebuild();
+  } catch (e) {
+    it.saving = false;
+    btn.disabled = false; btn.textContent = "💾 حفظ في الأرشيف";
+    it.el.querySelector(".cd").innerHTML = `<span style="color:#fca5a5">${esc(e.message)}</span>`;
+  }
+}
+
+function remove(it) {
+  stopCountdown(it); it.removed = true;
+  if (it.id) api("/api/discard", {id: it.id}).catch(() => {});
+  URL.revokeObjectURL(it.thumb || "");
+  it.el.remove(); items.delete(it.local);
+}
+
+/* ---------- archive rebuild status ---------- */
+let pollT = null;
+function showRebuild(rb) {
+  if (!rb) return;
+  const icon = $("#rbIcon"), msg = $("#rbMsg");
+  icon.innerHTML = rb.state === "running" || rb.state === "waiting" ? '<span class="spin"></span>' : rb.state === "done" ? "✅" : rb.state === "error" ? "⚠️" : "🗂️";
+  msg.textContent = rb.state === "running" ? "جاري تحديث الأرشيف… (ممكن ياخد شوية)" :
+    rb.state === "waiting" ? "هيتم تحديث الأرشيف بعد ثواني…" :
+    rb.state === "done" ? `الأرشيف اتحدث ✔ (${rb.finished || ""}) — افتح البرنامج أو اعمل تحديث للصفحة` :
+    rb.state === "error" ? (rb.msg || "حصل خطأ في تحديث الأرشيف") :
+    rb.state === "off" || !rb.configured ? "تحديث الأرشيف مش متظبط — حدد ملف rebuild.bat من الإعدادات" :
+    "الأرشيف جاهز";
+  msg.title = rb.log || "";
+  $("#rbNow").disabled = !rb.configured || rb.state === "running";
+}
+function pollRebuild() {
+  clearTimeout(pollT);
+  pollT = setTimeout(async () => {
+    try {
+      const rb = await api("/api/rebuild"); showRebuild(rb);
+      if (rb.state === "running" || rb.state === "waiting") pollRebuild();
+      else if (rb.state === "done") api("/api/state").then(setState).catch(() => {});
+    } catch (e) { pollRebuild(); }
+  }, 1500);
+}
+$("#rbNow").onclick = () => api("/api/rebuild", {}).then(rb => { showRebuild(rb); pollRebuild(); }).catch(() => {});
+
+/* ---------- drag & drop / pick / paste ---------- */
+let dragDepth = 0;
+addEventListener("dragenter", e => { e.preventDefault(); dragDepth++; document.body.classList.add("over"); });
+addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("over"); } });
+addEventListener("dragover", e => e.preventDefault());
+addEventListener("drop", e => {
+  e.preventDefault(); dragDepth = 0; document.body.classList.remove("over");
+  addFiles([...(e.dataTransfer.files || [])]);
+});
+$("#drop").onclick = () => $("#pick").click();
+$("#drop").onkeydown = e => { if (e.key === "Enter" || e.key === " ") $("#pick").click(); };
+$("#pick").onchange = e => { addFiles([...e.target.files]); e.target.value = ""; };
+addEventListener("paste", e => {
+  if (e.target.closest && e.target.closest("input")) return;
+  const fs = [...(e.clipboardData?.files || [])];
+  if (fs.length) addFiles(fs.map((f, i) => f.name && f.name !== "image.png" ? f :
+    new File([f], `xray-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}${i ? "-" + i : ""}.png`, {type: f.type, lastModified: Date.now()})));
+});
+addEventListener("beforeunload", e => {
+  if ([...items.values()].some(it => !it.done && !it.removed)) { e.preventDefault(); e.returnValue = ""; }
+});
+
+api("/api/state").then(s => { setState(s); if (s.rebuild && (s.rebuild.state === "running" || s.rebuild.state === "waiting")) pollRebuild(); })
+  .catch(() => { document.body.innerHTML = '<p style="padding:30px">البرنامج مش شغّال — افتح «add-xray.bat» الأول.</p>'; });
+</script>
+</body>
+</html>
