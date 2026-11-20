@@ -55,6 +55,11 @@ DEFAULTS = {
     "auto_save_seconds": 5,
     "rebuild_timeout_min": 60,
     "ignore_words": [],       # texts printed on every X-ray (clinic name, doctor...) that are not patient names
+    "sources": [],            # centers the X-rays come from (remembered for the "came from" box)
+    "watch_folders": [],      # extra folders to look for new X-rays in (Downloads / Desktop / WhatsApp are automatic)
+    "recent_days": 7,
+    # web addresses of the archive app that may use this tool (localhost / 127.0.0.1 are always allowed)
+    "allowed_origins": ["https://drkhalidalghannamdentalclinic-sudo.github.io"],
 }
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp", ".jfif"}
@@ -716,7 +721,39 @@ def file_hash(p):
     return h.hexdigest()
 
 
-def save_item(item, name, year):
+REG_FILE = TOOL_DIR / "imported.json"
+_reg = None
+
+
+def reg_key(name, size, mtime):
+    """identity of a source file, so files already added are not offered again"""
+    return "%s|%d|%d" % (os.path.basename(name or "").lower(), int(size or 0), int(mtime or 0))
+
+
+def registry():
+    global _reg
+    if _reg is None:
+        try:
+            _reg = json.loads(REG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            _reg = {}
+    return _reg
+
+
+def reg_add(k, dest):
+    with lock:
+        r = registry()
+        r[k] = dest
+        if len(r) > 30000:
+            for old in list(r)[:5000]:
+                r.pop(old, None)
+        try:
+            REG_FILE.write_text(json.dumps(r, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+
+
+def save_item(item, name, year, source=""):
     name = clean_name(name)
     if not name:
         raise ValueError("اكتب اسم المريض")
@@ -744,12 +781,19 @@ def save_item(item, name, year):
 
     src = item["path"]
     fname = BAD_CHARS.sub("_", item["filename"]).strip() or ("xray" + Path(src).suffix)
+    source = clean_name(source)
+    if source and not key(fname).startswith(key(source)):
+        fname = "%s - %s" % (source, fname)   # where it came from, e.g. "مركز الفا - WhatsApp Image ....jpeg"
+        if source not in CFG["sources"]:
+            CFG["sources"] = ([source] + CFG["sources"])[:30]
+            save_settings(CFG)
     size = os.path.getsize(src)
     h = None
     for d in os.scandir(pdir):  # same file already there?
         if d.is_file() and d.stat().st_size == size:
             h = h or file_hash(src)
             if file_hash(d.path) == h:
+                reg_add(item.get("reg", ""), d.path)
                 return {"duplicate": True, "path": d.path, "rel": os.path.relpath(d.path, ARCH.root), "new_patient": False, "folder": folder}
     stem, ext = os.path.splitext(fname)
     dest, n = os.path.join(pdir, fname), 2
@@ -760,6 +804,7 @@ def save_item(item, name, year):
     if os.path.getsize(dest) != size:
         raise IOError("النسخ ما كملش — جرّب تاني")
 
+    reg_add(item.get("reg", ""), dest)
     with lock:  # update the in-memory list right away
         found = [p for p in ARCH.patients if p["y"] == year and p["n"] == folder]
         if found:
@@ -906,51 +951,306 @@ def json_bytes(o):
     return json.dumps(o, ensure_ascii=False).encode("utf-8")
 
 
+VERSION = 2
+LOCAL_ORIGIN = re.compile(r"https?://(localhost|127\.0\.0\.1)(:\d+)?")
+
+
+def origin_ok(origin):
+    """pages allowed to use this tool: the archive app (on this PC or its web address) and the tool itself"""
+    if not origin:
+        return True
+    return bool(LOCAL_ORIGIN.fullmatch(origin)) or origin.rstrip("/") in [o.rstrip("/") for o in CFG.get("allowed_origins") or []]
+
+
+# ---------------------------------------------------------------- finding X-rays on this computer
+SCAN_EXT = IMG_EXT | DICOM_EXT
+tokens = {}   # short token -> file path (so the page never sends raw paths for thumbnails)
+_thumbs = {}
+
+
+_tok_of = {}
+
+
+def tok_for(path):
+    with lock:
+        t = _tok_of.get(path)
+        if not t:
+            t = _tok_of[path] = uuid.uuid4().hex[:16]   # random, so other pages cannot guess it
+            tokens[t] = path
+    return t
+
+
+def default_watch_folders():
+    """Downloads, Desktop and WhatsApp Desktop's received files - only the ones that exist"""
+    home = Path.home()
+    out = []
+    for name, p, depth in (("التنزيلات", home / "Downloads", 2), ("سطح المكتب", home / "Desktop", 1),
+                           ("سطح المكتب", home / "OneDrive" / "Desktop", 1),
+                           ("صور واتساب", home / "Pictures" / "WhatsApp", 3),
+                           ("واتساب", home / "Documents" / "WhatsApp", 3)):
+        if p.is_dir():
+            out.append((name, str(p), depth))
+    la = os.environ.get("LOCALAPPDATA")
+    if la and os.path.isdir(os.path.join(la, "Packages")):
+        try:
+            for d in os.scandir(os.path.join(la, "Packages")):
+                if "whatsapp" in d.name.lower():
+                    for sub in (("LocalState", "shared", "transfers"), ("LocalState",)):
+                        p = os.path.join(d.path, *sub)
+                        if os.path.isdir(p):
+                            out.append(("واتساب", p, 5))
+                            break
+        except OSError:
+            pass
+    return out
+
+
+def watch_folders():
+    out = default_watch_folders()
+    for p in CFG.get("watch_folders") or []:
+        if os.path.isdir(p):
+            out.append((os.path.basename(p.rstrip("\\/")) or p, p, 3))
+    return out
+
+
+def skip_dir(path):
+    a = os.path.normcase(os.path.abspath(path))
+    arch = os.path.dirname(CFG.get("rebuild_cmd") or "")   # the archive app folder (thumbs / previews live there)
+    for b in (CFG.get("xray_root"), str(TOOL_DIR), arch):
+        if b:
+            b = os.path.normcase(os.path.abspath(b))
+            if a == b or a.startswith(b + os.sep):
+                return True
+    return False
+
+
+def file_entry(path, st, where=""):
+    return {"t": tok_for(path), "name": os.path.basename(path), "path": path, "where": where,
+            "size": st.st_size, "mtime": int(st.st_mtime * 1000),
+            "done": reg_key(path, st.st_size, st.st_mtime) in registry()}
+
+
+def list_files(folder, depth, since=0, limit=300, where=""):
+    out = []
+
+    def walk(d, lvl):
+        if skip_dir(d) or len(out) >= limit * 3:
+            return
+        try:
+            ents = list(os.scandir(d))
+        except OSError:
+            return
+        for e in ents:
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    if lvl < depth and not e.name.startswith((".", "$")):
+                        walk(e.path, lvl + 1)
+                elif os.path.splitext(e.name)[1].lower() in SCAN_EXT:
+                    st = e.stat()
+                    if st.st_mtime >= since and st.st_size >= 15000:   # tiny files = stickers / icons
+                        out.append(file_entry(e.path, st, where))
+            except OSError:
+                pass
+
+    walk(folder, 1)
+    out.sort(key=lambda f: -f["mtime"])
+    return out[:limit]
+
+
+def recent_files(days):
+    since = time.time() - max(1, days) * 86400
+    seen, out = set(), []
+    for where, p, depth in watch_folders():
+        for f in list_files(p, depth, since, 200, where):
+            k = os.path.normcase(f["path"])
+            if k not in seen:
+                seen.add(k)
+                out.append(f)
+    out.sort(key=lambda f: -f["mtime"])
+    return out[:240]
+
+
+def thumb_bytes(path):
+    with lock:
+        if path in _thumbs:
+            return _thumbs[path]
+    data, ctype = None, "image/jpeg"
+    ext = os.path.splitext(path)[1].lower()
+    if Image is not None and ext in IMG_EXT:
+        try:
+            with Image.open(path) as im:
+                im.draft("L", (480, 480))
+                g = to_gray(im)
+                g.thumbnail((360, 360))
+                b = io.BytesIO()
+                g.save(b, "JPEG", quality=75)
+                data = b.getvalue()
+        except Exception:
+            data = None
+    if data is None and ext in BROWSER_IMG and os.path.getsize(path) < 15 << 20:
+        data = open(path, "rb").read()
+        ctype = {".png": "image/png", ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp"}.get(ext, "image/jpeg")
+    if data is None:
+        return None
+    with lock:
+        if len(_thumbs) > 400:
+            _thumbs.clear()
+        _thumbs[path] = (data, ctype)
+    return data, ctype
+
+
+def stage_path(path):
+    """take a file that is already on this computer (typed path, folder listing, Downloads / WhatsApp)"""
+    path = (path or "").strip().strip('"')
+    if not os.path.isfile(path):
+        raise ValueError("مش لاقي الملف ده: " + path)
+    st = os.stat(path)
+    iid = uuid.uuid4().hex[:12]
+    d = STAGING / iid
+    d.mkdir(parents=True, exist_ok=True)
+    fname = os.path.basename(path)
+    dst = str(d / ("upload" + Path(fname).suffix.lower()))
+    shutil.copy2(path, dst)
+    it = {"id": iid, "dir": str(d), "path": dst, "filename": fname, "size": st.st_size, "mtime": st.st_mtime,
+          "t": time.time(), "src": path, "reg": reg_key(fname, st.st_size, st.st_mtime)}
+    with lock:
+        items[iid] = it
+    res = analyze(it)
+    res["src"] = path
+    return res
+
+
+# ---------------------------------------------------------------- start with Windows
+def startup_file():
+    ad = os.environ.get("APPDATA")
+    return os.path.join(ad, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "XRay Import Tool.vbs") if ad else None
+
+
+def set_autostart(on):
+    f = startup_file()
+    if not f or not IS_WIN:
+        raise ValueError("التشغيل التلقائي متاح على ويندوز بس")
+    if on:
+        exe = sys.executable
+        w = os.path.join(os.path.dirname(exe), "pythonw.exe")
+        if os.path.exists(w):
+            exe = w
+        line = 'CreateObject("WScript.Shell").Run """%s"" ""%s"" --no-browser", 0, False' % (exe, os.path.abspath(__file__))
+        with open(f, "w", encoding="utf-16") as fh:   # UTF-16 so Arabic folder names work in VBScript
+            fh.write(line + "\r\n")
+    elif os.path.exists(f):
+        os.remove(f)
+
+
+# ---------------------------------------------------------------- HTTP
 class H(BaseHTTPRequestHandler):
-    server_version = "XRayImport/1"
+    server_version = "XRayImport/2"
 
     def log_message(self, *a):
         pass
 
-    def send(self, code, body, ctype="application/json; charset=utf-8"):
+    def cors(self):
+        o = self.headers.get("Origin")
+        if o and origin_ok(o):
+            self.send_header("Access-Control-Allow-Origin", o)
+            self.send_header("Vary", "Origin")
+
+    def send(self, code, body, ctype="application/json; charset=utf-8", cache=False):
         if not isinstance(body, (bytes, bytearray)):
             body = json_bytes(body)
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "max-age=300" if cache else "no-store")
+        self.cors()
         self.end_headers()
         self.wfile.write(body)
+
+    def host_ok(self):
+        # refuse requests that reach us under another host name (protects against DNS-rebinding tricks)
+        h = (self.headers.get("Host") or "").split(":")[0].lower()
+        return h in ("127.0.0.1", "localhost")
 
     def body_json(self):
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}") if n else {}
 
+    def do_OPTIONS(self):
+        o = self.headers.get("Origin")
+        if not self.host_ok() or not o or not origin_ok(o):
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(204)
+        self.cors()
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "X-XRay, X-File-Name, X-Last-Modified, Content-Type")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
-        p = urllib.parse.urlparse(self.path).path
+        if not self.host_ok():
+            return self.send(403, {"error": "forbidden"})
+        u = urllib.parse.urlparse(self.path)
+        p, q = u.path, urllib.parse.parse_qs(u.query)
         if p in ("/", "/index.html"):
             return self.send(200, PAGE_FILE.read_bytes(), "text/html; charset=utf-8")
+        if p == "/import.js":
+            return self.send(200, (TOOL_DIR / "import.js").read_bytes(), "text/javascript; charset=utf-8")
+        if p == "/api/hello":
+            return self.send(200, {"ok": True, "version": VERSION, "configured": bool(ARCH.root)})
+        o = self.headers.get("Origin")
+        if o and not origin_ok(o):
+            return self.send(403, {"error": "forbidden"})
         if p == "/api/state":
             return self.send(200, state_json())
         if p == "/api/rebuild":
             return self.send(200, REB.status())
+        if p == "/api/thumb":
+            with lock:
+                path = tokens.get((q.get("t") or [""])[0])
+            r = thumb_bytes(path) if path and os.path.isfile(path) else None
+            if not r:
+                return self.send(404, {"error": "no preview"})
+            return self.send(200, r[0], r[1], cache=True)
         self.send(404, {"error": "not found"})
 
     def do_POST(self):
-        # only our own page may call the API (blocks other websites from posting to this local tool)
-        if self.headers.get("X-XRay") != "1":
+        # only the archive app / this tool may call the API: the custom header forces the browser to ask first
+        # (OPTIONS above), and other websites are refused there
+        if self.headers.get("X-XRay") != "1" or not self.host_ok() or not origin_ok(self.headers.get("Origin")):
             return self.send(403, {"error": "forbidden"})
         p = urllib.parse.urlparse(self.path).path
         try:
             if p == "/api/analyze":
                 return self.send(200, self.analyze())
             data = self.body_json()
+            if p == "/api/import-path":
+                path = data.get("path")
+                if data.get("t"):
+                    with lock:
+                        path = tokens.get(data["t"])
+                return self.send(200, stage_path(path))
+            if p == "/api/browse":   # list the X-rays inside a folder the user typed
+                path = (data.get("path") or "").strip().strip('"')
+                if os.path.isfile(path):
+                    return self.send(200, {"files": [file_entry(path, os.stat(path))], "file": True})
+                if not os.path.isdir(path):
+                    raise ValueError("مش لاقي الفولدر أو الملف ده: " + path)
+                return self.send(200, {"files": list_files(path, 2, 0, 300, os.path.basename(path)), "file": False})
+            if p == "/api/recent":
+                days = int(data.get("days") or CFG.get("recent_days") or 7)
+                return self.send(200, {"files": recent_files(days),
+                                       "folders": [{"name": n, "path": f} for n, f, _ in watch_folders()]})
             if p == "/api/save":
                 with lock:
                     it = items.get(data.get("id"))
                 if not it:
                     return self.send(404, {"error": "الملف ده اتشال أو اتحفظ قبل كده"})
-                res = save_item(it, data.get("name", ""), data.get("year", ""))
+                res = save_item(it, data.get("name", ""), data.get("year", ""), data.get("source", ""))
                 drop_item(it["id"])
                 if not res["duplicate"]:
                     REB.request()
@@ -964,7 +1264,7 @@ class H(BaseHTTPRequestHandler):
             if p == "/api/ignore":
                 t = clean_name(data.get("text", ""))
                 if t and t not in CFG["ignore_words"]:
-                    CFG["ignore_words"].append(t)
+                    CFG["ignore_words"] = CFG["ignore_words"] + [t]
                     save_settings(CFG)
                 return self.send(200, {"ok": True, "ignore_words": CFG["ignore_words"]})
             if p == "/api/rebuild":
@@ -1015,7 +1315,8 @@ class H(BaseHTTPRequestHandler):
                 os.utime(path, (mtime, mtime))
         except Exception:
             mtime = None
-        it = {"id": iid, "dir": str(d), "path": path, "filename": fname, "size": n, "mtime": mtime, "t": time.time()}
+        it = {"id": iid, "dir": str(d), "path": path, "filename": fname, "size": n, "mtime": mtime, "t": time.time(),
+              "reg": reg_key(fname, n, mtime)}
         with lock:
             items[iid] = it
         return analyze(it)
@@ -1035,8 +1336,11 @@ def pick_path(kind):
         r = tkinter.Tk()
         r.withdraw()
         r.attributes("-topmost", True)
-        if kind == "folder":
-            p = filedialog.askdirectory(title="اختار فولدر الأشعة الأساسي", parent=r)
+        if kind in ("folder", "source"):
+            title = "اختار فولدر الأشعة الأساسي" if kind == "folder" else "اختار الفولدر اللي فيه الأشعة"
+            p = filedialog.askdirectory(title=title, parent=r)
+        elif kind == "xray":
+            p = filedialog.askopenfilename(title="اختار الأشعة", parent=r)
         else:
             p = filedialog.askopenfilename(title="اختار ملف تحديث الأرشيف (rebuild.bat)", parent=r,
                                            filetypes=[("Batch / script", "*.bat *.cmd *.py *.ps1"), ("All", "*.*")])
@@ -1057,13 +1361,21 @@ def set_config(data):
         if cmd and not os.path.exists(cmd):
             raise ValueError("الملف ده مش موجود: " + cmd)
         CFG["rebuild_cmd"] = cmd
-    for k in ("auto_save",):
-        if k in data:
-            CFG[k] = bool(data[k])
+    if "auto_save" in data:
+        CFG["auto_save"] = bool(data["auto_save"])
     if "auto_save_seconds" in data:
         CFG["auto_save_seconds"] = max(1, min(30, int(data["auto_save_seconds"] or 5)))
+    if "recent_days" in data:
+        CFG["recent_days"] = max(1, min(365, int(data["recent_days"] or 7)))
     if "ignore_words" in data and isinstance(data["ignore_words"], list):
         CFG["ignore_words"] = [clean_name(w) for w in data["ignore_words"] if clean_name(w)]
+    if "watch_folders" in data and isinstance(data["watch_folders"], list):
+        bad = [p for p in data["watch_folders"] if p and not os.path.isdir(p.strip().strip('"'))]
+        if bad:
+            raise ValueError("الفولدر ده مش موجود: " + bad[0])
+        CFG["watch_folders"] = [os.path.normpath(p.strip().strip('"')) for p in data["watch_folders"] if p.strip()]
+    if "autostart" in data:
+        set_autostart(bool(data["autostart"]))
     save_settings(CFG)
     ARCH.scan()
     return state_json()
@@ -1072,11 +1384,14 @@ def set_config(data):
 def state_json():
     eng = ocr_engine()
     yrs = set(ARCH.years) | {str(datetime.now().year)}
+    sf = startup_file()
     return {
         "configured": bool(ARCH.root and os.path.isdir(ARCH.root)),
         "xray_root": CFG.get("xray_root", ""), "rebuild_cmd": CFG.get("rebuild_cmd", ""),
         "auto_save": CFG.get("auto_save", True), "auto_save_seconds": CFG.get("auto_save_seconds", 5),
-        "ignore_words": CFG.get("ignore_words", []),
+        "ignore_words": CFG.get("ignore_words", []), "sources": CFG.get("sources", []),
+        "watch_folders": CFG.get("watch_folders", []), "recent_days": CFG.get("recent_days", 7),
+        "autostart": bool(sf and os.path.exists(sf)), "windows": IS_WIN,
         "years": sorted(yrs, reverse=True),
         "year_folders": ARCH.years,
         "patients": [{"n": p["n"], "y": p["y"], "c": p["count"]} for p in ARCH.patients],
@@ -1103,8 +1418,10 @@ def main():
     global REB
     port = int(CFG.get("port") or 8765)
     url = "http://127.0.0.1:%d/" % port
+    quiet = "--no-browser" in sys.argv
     if port_in_use(port):  # already running -> just open the page
-        webbrowser.open(url)
+        if not quiet:
+            webbrowser.open(url)
         return
     cleanup_staging()
     autodetect()
@@ -1118,9 +1435,10 @@ def main():
     print(" OCR engine   : " + (ocr_engine() or "NONE"))
     if Image is None:
         print(" Tip: run  'py -m pip install pillow'  for better name reading.")
-    print(" Keep this window open while you use the tool. Close it to stop.")
+    print(" The archive app now shows the '+ add X-ray' button.")
+    print(" Keep this window open while you use it. Close it to stop.")
     print("=" * 56)
-    if "--no-browser" not in sys.argv:
+    if not quiet:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:
         srv.serve_forever()

@@ -8,7 +8,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
-<link rel="stylesheet" href="style.css?v=2">
+<link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
 <div id="boot" style="position:fixed;inset:0;display:grid;place-items:center;background:#0b1220;color:#93a1bd;font-family:Tahoma,sans-serif;z-index:99">جاري تحميل الأرشيف…</div>
@@ -16,6 +16,7 @@
   <header class="top">
     <div class="bar">
       <h1>أرشيف الأشعة</h1>
+      <button id="addX" type="button" class="addx" hidden>＋ إضافة أشعة</button>
       <span id="mode" class="chip" title=""></span>
     </div>
     <div class="search">
@@ -43,6 +44,7 @@
     <div class="bar">
       <button id="back" type="button" class="ico" aria-label="رجوع">→</button>
       <div class="ptitle"><h2 id="pname"></h2><div id="pmeta" class="muted"></div></div>
+      <button id="addXp" type="button" class="addx" hidden title="إضافة أشعة جديدة للمريض ده">＋ أشعة</button>
     </div>
   </header>
   <main id="files"></main>
@@ -75,6 +77,6 @@
   </div>
 </div>
 
-<script src="app.js?v=2"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

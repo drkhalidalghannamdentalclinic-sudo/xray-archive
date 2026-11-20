@@ -407,6 +407,37 @@ ping();
 setInterval(() => { if (document.visibilityState === "visible") { const was = serverOK; ping().then(() => { if (was !== serverOK) updateMode(); }); } }, 30000);
 
 { const b = document.getElementById("boot"); if (b) b.remove(); }
+
+/* ---------- add new X-rays: works on the clinic PC, where the import tool (import-tool/add-xray.bat) runs ---------- */
+const XI_BASE = store.get("importBase", "http://127.0.0.1:8765");
+let xiMode = "";   // "" = tool not running, "in" = opens inside the app, "tab" = opens the tool's own page
+function openImport(p) {
+  if (xiMode === "in" && window.XImport) window.XImport.open({name: p ? p.n : "", onRebuilt: () => location.reload()});
+  else if (xiMode === "tab") window.open(XI_BASE + "/", "xray-import");
+}
+$("#addX").addEventListener("click", () => openImport(null));
+$("#addXp").addEventListener("click", () => openImport(curP));
+async function probeImport() {
+  // only the PC can have the tool; don't make phones knock on 127.0.0.1
+  if (!/Windows|Macintosh|Linux x86/.test(navigator.userAgent) || /Android|iPhone|iPad/.test(navigator.userAgent)) return;
+  try {
+    const r = await fetch(XI_BASE + "/api/hello", {cache: "no-store"});
+    if ((await r.json()).ok) xiMode = "in";
+  } catch (e) {
+    // running, but this page's address is not allowed to talk to it -> open the tool in its own tab
+    try { await fetch(XI_BASE + "/api/hello", {mode: "no-cors", cache: "no-store"}); xiMode = "tab"; } catch (x) {}
+  }
+  if (xiMode === "in" && !window.XImport) {
+    await new Promise((ok, bad) => {
+      const s = document.createElement("script");
+      s.src = XI_BASE + "/import.js?v=" + Date.now(); s.onload = ok; s.onerror = bad;
+      document.head.appendChild(s);
+    }).catch(() => { xiMode = "tab"; });
+  }
+  $("#addX").hidden = $("#addXp").hidden = !xiMode;
+}
+probeImport();
+setInterval(() => { if (!xiMode && document.visibilityState === "visible") probeImport(); }, 60000);
 if (PK && window.XPACK.saved) {
   const a = document.createElement("a"); a.href = "#"; a.textContent = " · تغيير ملف الأرشيف";
   a.style.color = "inherit";
