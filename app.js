@@ -415,8 +415,25 @@ function openImport(p) {
   if (xiMode === "in" && window.XImport) window.XImport.open({name: p ? p.n : "", onRebuilt: () => location.reload()});
   else if (xiMode === "tab") window.open(XI_BASE + "/", "xray-import");
 }
-$("#addX").addEventListener("click", () => openImport(null));
-$("#addXp").addEventListener("click", () => openImport(curP));
+// the buttons are made here when this copy of index.html doesn't have them yet (so only app.js has to be replaced)
+function addBtn(id, label, title, after) {
+  let b = document.getElementById(id);
+  if (!b) {
+    b = document.createElement("button"); b.id = id; b.type = "button"; b.className = "addx"; b.hidden = true;
+    b.textContent = label; if (title) b.title = title;
+    if (after) after.insertAdjacentElement("afterend", b);
+  }
+  return b;
+}
+const addX = addBtn("addX", "＋ إضافة أشعة", "", document.querySelector("#listView .bar h1"));
+const addXp = addBtn("addXp", "＋ أشعة", "إضافة أشعة جديدة للمريض ده", document.querySelector("#patientView .ptitle"));
+if (!document.getElementById("xr-addx-css")) {
+  const st = document.createElement("style"); st.id = "xr-addx-css";
+  st.textContent = ".addx{border:0;background:#3b82f6;color:#fff;font-weight:600;border-radius:99px;padding:7px 14px;font-size:.92rem;white-space:nowrap;cursor:pointer}.addx:hover{background:#60a5fa}#listView .bar h1{flex:1}";
+  document.head.appendChild(st);
+}
+addX.addEventListener("click", () => openImport(null));
+addXp.addEventListener("click", () => openImport(curP));
 async function probeImport() {
   // only the PC can have the tool; don't make phones knock on 127.0.0.1
   if (!/Windows|Macintosh|Linux x86/.test(navigator.userAgent) || /Android|iPhone|iPad/.test(navigator.userAgent)) return;
@@ -434,7 +451,7 @@ async function probeImport() {
       document.head.appendChild(s);
     }).catch(() => { xiMode = "tab"; });
   }
-  $("#addX").hidden = $("#addXp").hidden = !xiMode;
+  addX.hidden = addXp.hidden = !xiMode;
 }
 probeImport();
 setInterval(() => { if (!xiMode && document.visibilityState === "visible") probeImport(); }, 60000);
