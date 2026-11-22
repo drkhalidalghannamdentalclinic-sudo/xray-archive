@@ -1004,11 +1004,13 @@ def analyze(item):
     elif ext not in DICOM_EXT:
         note = "نوع الملف ده مش صورة — اكتب الاسم بإيدك"
 
+    # the year is "sure" only when it comes from the X-ray itself; a file date can be the day it was sent / downloaded
+    year_sure = bool(year)
     if not year and item.get("mtime"):
         year, year_src = str(datetime.fromtimestamp(item["mtime"]).year), "تاريخ الملف"
     this_year = str(datetime.now().year)
     if not year or not (1990 <= int(year) <= int(this_year) + 1):
-        year, year_src = this_year, "السنة الحالية"
+        year, year_src, year_sure = this_year, "السنة الحالية", False
 
     item["xdate"] = xdate if xdate and xdate[:4] == year else None
     cands = candidates_from(sources, fname)
@@ -1021,7 +1023,7 @@ def analyze(item):
     return {
         "id": item["id"], "filename": fname, "size": item["size"],
         "candidates": cands, "best": best["name"] if best else "", "confident": confident,
-        "year": year, "year_source": year_src, "date": item["xdate"], "ocr_text": ocr_lines[:40], "note": note, "preview": preview,
+        "year": year, "year_source": year_src, "year_sure": year_sure, "date": item["xdate"], "ocr_text": ocr_lines[:40], "note": note, "preview": preview,
     }
 
 
@@ -1076,7 +1078,7 @@ def save_item(item, name, year, source=""):
     if not ARCH.root or not os.path.isdir(ARCH.root):
         raise ValueError("فولدر الأشعة الأساسي مش متحدد أو مش موجود — افتح الإعدادات")
 
-    ydir = ARCH.year_folder(year, create=True)
+    ydir = ARCH.year_folder(year)   # the year comes from the X-ray, never from the patient's older folders
     folder = None
     try:  # same patient already has a folder in this year? (spelling may differ slightly in letters like ة/ه)
         for d in os.scandir(ydir):
@@ -1088,9 +1090,8 @@ def save_item(item, name, year, source=""):
     prev = ARCH.by_key.get(key(name))
     new_patient = folder is None and not prev
     if folder is None:
-        folder = prev[0]["n"] if prev else name   # keep the same spelling as older years
+        folder = max(prev, key=lambda p: p["y"])["n"] if prev else name   # keep the same spelling as older years
     pdir = os.path.join(ydir, folder)
-    os.makedirs(pdir, exist_ok=True)
 
     src = item["path"]
     fname = BAD_CHARS.sub("_", item["filename"]).strip() or ("xray" + Path(src).suffix)
@@ -1102,12 +1103,22 @@ def save_item(item, name, year, source=""):
             save_settings(CFG)
     size = os.path.getsize(src)
     h = None
-    for d in os.scandir(pdir):  # same file already there?
-        if d.is_file() and d.stat().st_size == size:
-            h = h or file_hash(src)
-            if file_hash(d.path) == h:
-                reg_add(item.get("reg", ""), d.path)
-                return {"duplicate": True, "path": d.path, "rel": os.path.relpath(d.path, ARCH.root), "new_patient": False, "folder": folder}
+    # same X-ray already saved for this patient (in this year or any other year)? then don't copy it again
+    dirs = [pdir] + [os.path.join(ARCH.root, ARCH.years.get(p["y"], p["y"]), p["n"]) for p in (prev or []) if p["y"] != year]
+    for dd in dirs:
+        try:
+            ents = list(os.scandir(dd))
+        except OSError:
+            continue
+        for d in ents:
+            if d.is_file() and d.stat().st_size == size:
+                h = h or file_hash(src)
+                if file_hash(d.path) == h:
+                    reg_add(item.get("reg", ""), d.path)
+                    return {"duplicate": True, "path": d.path, "rel": os.path.relpath(d.path, ARCH.root), "new_patient": False,
+                            "folder": folder}
+    ARCH.year_folder(year, create=True)
+    os.makedirs(pdir, exist_ok=True)
     stem, ext = os.path.splitext(fname)
     dest, n = os.path.join(pdir, fname), 2
     while os.path.exists(dest):

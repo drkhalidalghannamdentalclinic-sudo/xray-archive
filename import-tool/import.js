@@ -423,7 +423,8 @@ function renderForm(it) {
       <input type="text" class="in nm" list="xi-plist" placeholder="اسم المريض" value="${esc(name)}" autocomplete="off">
       <select class="in yr" title="السنة">${years.map(y => `<option value="${y}"${y === r.year ? " selected" : ""}>${num(y)}</option>`).join("")}<option value="other">سنة تانية…</option></select>
     </div>
-    <div class="muted" style="margin-top:4px">السنة: ${esc(r.year_source || "")}${r.date ? ` <span class="ltr">(${esc(r.date.replace(/-/g, "/"))})</span>` : ""}</div>
+    ${r.year_sure ? `<div class="muted" style="margin-top:4px">السنة من ${esc(r.year_source || "")}${r.date ? ` <span class="ltr">(${esc(r.date.replace(/-/g, "/"))})</span>` : ""}</div>`
+      : `<div class="warn-t" style="margin-top:4px;font-size:.88rem">⚠ التاريخ مش مكتوب على الأشعة — السنة دي من ${esc(r.year_source || "")}، اتأكد إنها سنة الأشعة</div>`}
     ${cands || same ? `<div class="cands">${cands}${same}</div>` : ""}
     <div class="dest"></div>
     <div class="acts"><button class="btn pri save" type="button">💾 حفظ في الأرشيف</button>
@@ -458,7 +459,7 @@ function renderForm(it) {
   el.querySelector(".save").onclick = () => save(it);
   el.querySelector(".rm").onclick = () => remove(it);
   refreshDest(it);
-  if (confident && name && S.auto_save) startCd(it);
+  if (confident && name && S.auto_save && r.year_sure) startCd(it);   // never guess the year on its own
   else if (!name) nm.focus();
 }
 
