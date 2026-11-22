@@ -176,9 +176,14 @@ class Archive:
                     if not k:
                         continue
                     latest = max(ps, key=lambda p: p["y"])
-                    idx.append({"k": k, "toks": k.split(), "n": latest["n"],
-                                "years": sorted({p["y"] for p in ps}, reverse=True),
-                                "count": sum(p["count"] for p in ps)})
+                    e = {"k": k, "toks": k.split(), "n": latest["n"],
+                         "years": sorted({p["y"] for p in ps}, reverse=True),
+                         "count": sum(p["count"] for p in ps)}
+                    if ARABIC_RE.search(latest["n"]):   # sound-alike prefixes, to match English names on X-rays
+                        ph = [phon(w) for w in name_words(latest["n"])]
+                        e["pc"] = ["".join(cons(x) for x in ph[:j]) for j in range(1, len(ph) + 1)]
+                        e["pf"] = ["".join(ph[:j]) for j in range(1, len(ph) + 1)]
+                    idx.append(e)
                 self._index = idx
             return self._index
 
@@ -316,6 +321,268 @@ def patients_in_text(all_text):
     return out[:5]
 
 
+# ---------------------------------------------------------------- English name on the X-ray  <->  Arabic folder names
+# Names are compared by how they sound: both scripts are turned into the same simple letters
+# (vowels a/i/u, h-sounds and ع dropped from the skeleton), e.g. "TOKA ESMAIL" and "تقى إسماعيل" -> "tk" + "sml".
+ARABIC_RE = re.compile("[؀-ۿ]")
+LATIN_RE = re.compile("[A-Za-z]")
+LAT_DI = (("kh", "X"), ("sh", "S"), ("ch", "S"), ("gh", "G"), ("ph", "F"), ("th", "T"), ("dh", "Z"), ("ck", "K"))
+LAT_UP = {"X": "x", "S": "S", "G": "g", "F": "f", "T": "t", "Z": "z", "K": "k"}
+LAT_1 = {"b": "b", "p": "b", "t": "t", "d": "d", "k": "k", "c": "k", "q": "k", "g": "g", "j": "g", "s": "s", "z": "z",
+         "f": "f", "v": "f", "l": "l", "m": "m", "n": "n", "r": "r", "x": "ks", "h": "H",
+         "a": "a", "e": "i", "i": "i", "o": "u", "u": "u", "w": "u", "y": "i"}
+AR_1 = {"ب": "b", "ت": "t", "ط": "t", "ث": "t", "د": "d", "ض": "d", "ذ": "z", "ز": "z", "ظ": "z", "س": "s", "ص": "s",
+        "ش": "S", "ج": "g", "غ": "g", "ق": "k", "ك": "k", "خ": "x", "ف": "f", "ل": "l", "م": "m", "ن": "n", "ر": "r",
+        "ح": "H", "ه": "H", "ع": "E", "ء": "E", "ئ": "E", "ؤ": "E",
+        "ا": "a", "أ": "a", "آ": "a", "ى": "a", "ة": "a", "ٱ": "a", "إ": "i", "ي": "i", "و": "u"}
+VOW = set("aiu")
+
+
+def phon(token):
+    """sound-alike form of one name word, in either script"""
+    t = TASHKEEL.sub("", unicodedata.normalize("NFKC", token or "")).lower()
+    if LATIN_RE.search(t):
+        t = re.sub(r"t(?=[aeiou]?l+ah?$)", "", t)   # Mennatallah / Nematullah: the t is not written in Arabic
+        for a, b in LAT_DI:
+            t = t.replace(a, b)
+        codes = [LAT_UP[c] if c in LAT_UP else LAT_1.get(c, "") for c in t]
+    else:
+        codes = [AR_1.get(c, "") for c in t]
+    out = []
+    for c in codes:
+        if c and (not out or c != out[-1]):   # double letters count once (Mohammed = Mohamed)
+            out.append(c)
+    s = "".join(out)
+    s = ("h" if s.startswith("H") else "") + s.lstrip("H")   # a starting H counts (Hamdy is not Ahmed)
+    s = s.replace("H", "").replace("E", "")
+    return re.sub(r"([aiu])\1+", r"\1", s)
+
+
+def cons(p):
+    return "".join(c for c in p if c not in VOW)
+
+
+def name_words(s):
+    return [w for w in re.split(r"[\s\-_.]+", s or "") if w]
+
+
+# common names, used when the archive itself has no example of the word yet
+BUILTIN_AR = {}
+for _line in """
+محمد=mohamed,mohammed,mohammad,muhammad,mohamad|أحمد=ahmed,ahmad|محمود=mahmoud,mahmud,mahmood|مصطفى=mostafa,moustafa,mustafa
+علي=ali,aly|حسن=hassan,hasan|حسين=hussein,hussien,hosein,hossein,husein|إبراهيم=ibrahim,ebrahim|إسماعيل=ismail,esmail,ismael,esmaeil
+عمر=omar,omer|عمرو=amr|خالد=khaled,khalid|طارق=tarek,tareq,tarik|يوسف=youssef,yousef,yousif,yusuf,joseph|كريم=karim,kareem
+السيد=elsayed,alsayed,sayed,elsaid|سيد=sayyed|سعيد=said,saeed,saied|سعد=saad|عبدالله=abdallah,abdullah,abdalla
+عبد=abd,abdel,abdul,abdo|عبده=abdou|جمال=gamal,jamal|سمير=samir,sameer|سامي=samy,sami|سامح=sameh|فتحي=fathy,fathi
+مجدي=magdy,magdi|هاني=hany,hani|حمدي=hamdy,hamdi|رامي=ramy,rami|وائل=wael|وليد=walid,waleed|أسامة=osama,usama|أيمن=ayman
+أشرف=ashraf|عادل=adel|عماد=emad,imad|عصام=essam,esam|هشام=hesham,hisham|شريف=sherif,sherief,sharif|تامر=tamer
+مينا=mina,mena|جرجس=girgis,gerges|جورج=george|بيتر=peter|مارك=mark|مارينا=marina|ماري=mary|إسلام=islam,eslam
+مهاب=mohab|زياد=ziad,zeyad|مازن=mazen|حازم=hazem|حسام=hossam,hosam|حمادة=hamada|رضا=reda|ممدوح=mamdouh|ناصر=nasser,naser
+صلاح=salah|فؤاد=fouad,fuad|نبيل=nabil,nabeel|رأفت=raafat,rafat|رفعت=refaat|شعبان=shaaban,shaban|رمضان=ramadan
+عزت=ezzat|جلال=galal|كمال=kamal|منير=mounir,monir|منصور=mansour|حامد=hamed|حمد=hamad|زكريا=zakaria,zakariya|نادر=nader
+فاطمة=fatma,fatima,fatmah|منى=mona|سارة=sara,sarah|نور=nour,noor|آية=aya,ayah|إسراء=esraa,israa|أسماء=asmaa,asma
+دعاء=doaa,duaa|علاء=alaa|هبة=heba,hiba|هند=hend,hind|مروة=marwa|رنا=rana|ريم=reem,rim|مي=mai,may|ياسمين=yasmin,yasmeen
+ندى=nada|سلمى=salma|مريم=mariam,maryam,miriam|هنا=hana|تقى=toka,tuqa,taqwa,toqa|شيماء=shaimaa,shimaa,shaimaa|زينب=zeinab,zainab,zaynab
+إيمان=eman,iman|أميرة=amira,ameera|سمر=samar|نسمة=nesma|نهى=noha|دينا=dina|رضوى=radwa|رانيا=rania|غادة=ghada|هدى=hoda,huda
+سعاد=soad,suad|نادية=nadia|صباح=sabah|عبير=abeer,abir|عزة=azza|ليلى=laila,leila,layla|نجلاء=naglaa|رحاب=rehab|سحر=sahar
+أمل=amal|حنان=hanan|وفاء=wafaa|ولاء=walaa|بسمة=basma|جنى=gana,jana|ملك=malak|حبيبة=habiba|جميلة=gamila|خديجة=khadiga,khadija
+عائشة=aisha,aesha|مها=maha|منة=menna,mennah|روان=rawan|يارا=yara|لمياء=lamiaa|نرمين=nermin,nermeen|شيرين=sherin,shereen
+مها=maha|ريهام=reham|سهير=soheir|ماجدة=magda|عفاف=afaf|سناء=sanaa|ثناء=thanaa|صفاء=safaa|رشا=rasha|داليا=dalia|إنجي=engy
+الرحمن=elrahman,alrahman|رحمن=rahman|العزيز=elaziz,alaziz|عزيز=aziz|الحميد=elhamid|حميد=hamid|المنعم=elmoneim|منعم=moneim
+الفتاح=elfattah|فتاح=fattah|الله=allah|الحليم=elhalim|حليم=halim|الكريم=elkarim|الوهاب=elwahab|وهاب=wahab|الجواد=elgawad
+الرازق=elrazek|رازق=razek|القادر=elkader|قادر=kader|اللطيف=ellatif|لطيف=latif|الباسط=elbaset|المقصود=elmaksoud|الغني=elghany
+الشافعي=elshafei|الشربيني=elsherbiny|المصري=elmasry|حجازي=hegazy,hegazi|عثمان=osman,othman|سليمان=soliman,sulaiman,suleiman
+عيسى=eissa,essa,issa|موسى=moussa,mousa,musa|يحيى=yehia,yahia,yahya|زكي=zaki,zaky|شوقي=shawky,shawki|بكر=bakr|بدوي=badawy
+نورهان=nourhan,norhan|هاجر=hagar,hager,hajar|وجدي=wagdy,wagdi|مروان=marwan|رضوان=radwan|حنين=hanin,haneen|جهاد=gehad,gihad
+جيهان=gihan,gehan|شهد=shahd|رحمة=rahma|رقية=rokaya,roqaya|سندس=sondos|فرح=farah|جنة=ganna,janna|رتاج=retaj|لجين=logain,lojain
+سيف=seif,saif|أدهم=adham|بلال=belal,bilal|حمزة=hamza|أنس=anas|معاذ=moaz,muaz|ياسين=yassin,yasin,yassine|ياسر=yasser,yaser
+وسام=wessam,wesam|إيهاب=ehab,ihab|مدحت=medhat|صبحي=sobhy,sobhi|رجب=ragab|صابر=saber|فوزي=fawzy,fawzi|حلمي=helmy,helmi
+لطفي=lotfy,lotfi|رمزي=ramzy,ramzi|صبري=sabry,sabri|شكري=shokry,shokri|ناجي=nagy,nagi|نجيب=naguib,nagib|رؤوف=raouf
+عاطف=atef|حاتم=hatem|ماهر=maher|نصر=nasr|جابر=gaber|حسنين=hassanein|وجيه=wagih,wageeh|صفوت=safwat|ثروت=tharwat,sarwat
+نهلة=nahla|نشوى=nashwa|علا=ola|ألفت=olfat|إيناس=inas,enas|عبلة=abla|هويدا=howayda,howaida|هيام=hayam|سماح=samah|هالة=hala
+ميرفت=mervat,mervet|نيفين=nevin,nevine,nevein|نوال=nawal|كوثر=kawthar,kawsar|سلوى=salwa|فايزة=fayza,faiza|عزيزة=aziza
+حميدة=hamida|كريمة=karima|لطيفة=latifa|نبيلة=nabila|سيدة=sayeda,sayda|يمنى=yomna,yumna|رؤى=roaa|علياء=alyaa,aliaa
+هدير=hadeer,hadir|منة_الله=mennatallah,mennatullah|رويدا=rowida|نورا=noura,nora|نوران=nouran,noran|لميس=lamis,lamees
+لمى=lama|تسنيم=tasneem,tasnim|بسنت=bassant,basant|سلسبيل=salsabil|روضة=rawda|رغدة=raghda|إسماعيل=smail|عاصم=asem,assem
+أنور=anwar|أمير=amir,ameer|أمين=amin,ameen|أنطونيوس=antonios|أبانوب=abanoub|كيرلس=kirollos,kerolos|مرقص=morcos,marcos
+ماريان=marian,mariane|ميرنا=mirna|كاترين=catherine,katrin|فيبي=phoebe,febi|إيريني=irini,ereny|مادونا=madonna|نانسي=nancy
+""".split():
+    for _pair in _line.split("|"):
+        if "=" in _pair:
+            _ar, _lat = _pair.split("=")
+            for _l in _lat.split(","):
+                BUILTIN_AR.setdefault(_l.strip(), _ar.replace("_", " "))
+
+
+def archive_is_arabic():
+    with lock:
+        ps = ARCH.patients
+        if not ps:
+            return True   # unknown yet: the clinic writes folders in Arabic
+        n = sum(1 for p in ps[:3000] if ARABIC_RE.search(p["n"]))
+        return n * 2 >= min(len(ps), 3000)
+
+
+def token_dict():
+    """sound skeleton -> {Arabic word as written in this archive: how often}"""
+    with lock:
+        td = getattr(ARCH, "_tokdict", None)
+        if td is None or ARCH._tokdict_n != len(ARCH.patients):
+            td = {}
+            for p in ARCH.patients:
+                if ARABIC_RE.search(p["n"]):
+                    for w in name_words(p["n"]):
+                        c = cons(phon(w))
+                        if c:
+                            d = td.setdefault(c, {})
+                            d[w] = d.get(w, 0) + 1
+            ARCH._tokdict, ARCH._tokdict_n = td, len(ARCH.patients)
+        return td
+
+
+def local_spelling(ar):
+    """the archive's own way of writing this word (إسماعيل / اسماعيل, تقى / تقي ...)"""
+    best, bn = ar, 0
+    for w, n in token_dict().get(cons(phon(ar)), {}).items():
+        if key(w) == key(ar) and n > bn:
+            best, bn = w, n
+    return best
+
+
+def rule_translit(t):
+    """last resort for a word we have never seen: letter by letter"""
+    t = t.lower()
+    out, i = [], 0
+    di = {"kh": "خ", "sh": "ش", "ch": "ش", "gh": "غ", "th": "ث", "ph": "ف", "ou": "و", "oo": "و", "ee": "ي", "ei": "ي",
+          "ai": "ي", "aa": "ا"}
+    one = {"b": "ب", "p": "ب", "t": "ت", "d": "د", "r": "ر", "z": "ز", "s": "س", "f": "ف", "v": "ف", "k": "ك", "c": "ك",
+           "q": "ق", "l": "ل", "m": "م", "n": "ن", "h": "ه", "g": "ج", "j": "ج", "x": "كس", "w": "و", "y": "ي",
+           "i": "ي", "o": "و", "u": "و", "a": "", "e": ""}
+    while i < len(t):
+        two = t[i:i + 2]
+        if i == 0 and t[0] in "aeiou" and two not in di:
+            out.append("إ" if t[0] in "ei" else "أ")
+            i += 1
+            continue
+        if two in di:
+            out.append(di[two])
+            i += 2
+            continue
+        ch = t[i]
+        if t[i:] in ("an", "ar") and i > 1 and t[i-1] not in "aeiou":   # Nourhan, Hagar -> long a
+            out.append("ا" + one[t[i+1]])
+            break
+        if i == len(t) - 1 and ch == "a":
+            out.append("ية" if t[-2:] in ("ia", "ya") and out and out[-1] == "ي" and out.pop() is not None else "ة")
+        elif i == len(t) - 1 and ch in "iy":
+            out.append("ي")
+        elif ch in one:
+            if not (out and out[-1] == one[ch] and one[ch]):   # double letters once
+                out.append(one[ch])
+        i += 1
+    return "".join(out)
+
+
+def translit_word(w):
+    lw = w.lower()
+    if lw in BUILTIN_AR:
+        return local_spelling(BUILTIN_AR[lw]), True
+    m = re.fullmatch(r"(?:abd|abdel|abdul|abdal)[\s\-]?(?:el|al)?(.+)", lw)
+    if m and len(m.group(1)) > 2:   # Abdelrahman -> عبد الرحمن
+        rest, _ = translit_word("el" + m.group(1)) if ("el" + m.group(1)) in BUILTIN_AR else translit_word(m.group(1))
+        if not rest.startswith("ال") and rest != "الله":
+            rest = "ال" + rest
+        return local_spelling("عبد") + " " + rest, True
+    if lw.startswith(("el", "al")) and len(lw) > 4 and not lw.startswith(("ela", "ali", "alaa")):   # Elsayed -> السيد
+        w2, ok = translit_word(lw[2:])
+        return "ال" + w2, ok
+    p = phon(w)
+    c = cons(p)
+    opts = token_dict().get(c, {})
+    if opts:   # learn the spelling from the archive (most similar sound, then the most used)
+        best = max(opts.items(), key=lambda kv: difflib.SequenceMatcher(None, p, phon(kv[0])).ratio() + 0.02 * min(kv[1], 10))
+        return best[0], True
+    return rule_translit(w), False
+
+
+def transliterate(name):
+    words = [w for w in name_words(name) if LATIN_RE.search(w)]
+    out, i = [], 0
+    while i < len(words):
+        w = words[i]
+        lw = w.lower()
+        if lw in ("el", "al") and i + 1 < len(words):   # "El Sayed" -> السيد
+            nxt, _ = translit_word(words[i + 1])
+            out.append(nxt if nxt.startswith("ال") else "ال" + nxt)
+            i += 2
+            continue
+        if lw in ("abd", "abdel", "abdul") and i + 1 < len(words):   # "Abdel Rahman" -> عبد الرحمن
+            nxt, _ = translit_word(words[i + 1])
+            out.append(local_spelling("عبد") + " " + (nxt if nxt.startswith("ال") or nxt == "الله" else "ال" + nxt))
+            i += 2
+            continue
+        out.append(translit_word(w)[0])
+        i += 1
+    return " ".join(x for x in out if x)
+
+
+def cross_match(latin):
+    """Arabic patient folders that sound like an English name. Returns [(score, entry)], 0.95+ = same sound"""
+    lt = [phon(w) for w in name_words(latin) if LATIN_RE.search(w)]
+    lc, lf = "".join(cons(p) for p in lt), "".join(lt)
+    if len(lc) < 3:
+        return []
+    out = []
+    for e in ARCH.index():
+        pcs = e.get("pc")
+        if not pcs:
+            continue
+        best = 0.0
+        for j, ac in enumerate(pcs):
+            if len(ac) > len(lc) + 2:
+                break
+            if ac == lc:
+                s = 0.95 + 0.04 * difflib.SequenceMatcher(None, lf, e["pf"][j]).ratio() + (0.005 if j == len(pcs) - 1 else 0)
+            elif len(lc) >= 5 and abs(len(ac) - len(lc)) <= 1:
+                r = difflib.SequenceMatcher(None, lc, ac).ratio()
+                s = 0.8 * r if r >= 0.85 else 0
+            else:
+                s = 0
+            best = max(best, s)
+        if best:
+            out.append((best, e))
+    out.sort(key=lambda x: -x[0])
+    return out[:6]
+
+
+def cross_script(cands):
+    """English names read from the X-ray -> the patient's Arabic folder, or the name written in Arabic for a new one"""
+    if not cands:
+        return cands
+    extra = []
+    for c in cands:
+        if c["source"] in ("patient", "translit") or ARCH.by_key.get(key(c["name"])) or ARABIC_RE.search(c["name"]) \
+                or not LATIN_RE.search(c["name"]):
+            continue
+        ms = cross_match(c["name"])
+        exact = [m for m in ms if m[0] >= 0.95]
+        if exact:
+            for i, (sc, e) in enumerate(exact[:4]):
+                sure = i == 0 and len(exact) == 1
+                extra.append({"name": e["n"], "source": "patient", "read_as": c["name"],
+                              "score": round(min(c["score"] + 0.04, 0.97) if sure else 0.86 - 0.01 * i, 3)})
+            c["score"] = min(c["score"], 0.5)
+            continue
+        for i, (sc, e) in enumerate(ms[:3]):   # only close: offer them, but the new-patient spelling comes first
+            extra.append({"name": e["n"], "source": "patient", "read_as": c["name"], "score": round(0.7 - 0.01 * i, 3)})
+        if archive_is_arabic():
+            tr = transliterate(c["name"])
+            if tr and ARABIC_RE.search(tr):
+                extra.append({"name": tr, "source": "translit", "read_as": c["name"], "score": round(min(c["score"], 0.88), 3)})
+                c["score"] = min(c["score"], 0.5)
+    return cands + extra
+
+
 def candidates_from(texts_by_source, filename):
     """texts_by_source: list of (source, [lines]) -> ranked candidate list"""
     ign = ignore_keys()
@@ -379,6 +646,9 @@ def candidates_from(texts_by_source, filename):
     # a clear name was found -> drop random words the OCR picked up from inside the picture
     if any(c["source"] in ("label", "dicom", "patient", "meta") and c["score"] >= 0.9 for c in cands):
         cands = [c for c in cands if c["source"] != "ocr" or c["score"] >= 0.9]
+
+    # English name on the X-ray, Arabic folders in the archive
+    cands = cross_script(cands)
 
     # merge duplicates produced by snapping
     seen, out = set(), []

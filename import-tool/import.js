@@ -27,7 +27,7 @@ const when = ms => {
   return days === 0 ? "النهارده " + t : days === 1 ? "امبارح " + t : d.toLocaleDateString("ar-EG", {day: "numeric", month: "short"}) + " " + t;
 };
 const SRC = {dicom: "من بيانات الأشعة", label: "مكتوب جنب «الاسم»", patient: "مريض موجود في الأرشيف", ocr: "مكتوب على الأشعة",
-             meta: "من بيانات الصورة", filename: "من اسم الملف"};
+             meta: "من بيانات الصورة", filename: "من اسم الملف", translit: "اتكتب بالعربي"};
 
 async function api(path, body, raw) {
   const opt = {method: body === undefined ? "GET" : "POST", headers: {"X-XRay": "1"}, cache: "no-store"};
@@ -398,14 +398,22 @@ function renderForm(it) {
     const clash = r.best && r.confident && key(r.best) !== key(preset);
     name = preset; confident = !clash;
     status = clash ? `<span class="warn-t">⚠ المكتوب على الأشعة «${esc(r.best)}» — مش نفس المريض! اتأكد</span>` : `<span class="ok-t">✔ للمريض ${esc(preset)}</span>`;
-  } else if (r.best && r.confident) status = `<span class="ok-t">✔ لقيت الاسم</span>`;
-  else if (r.best) status = `<span class="warn-t">⚠ ده اللي قدرت أقراه — اتأكد من الاسم</span>`;
-  else status = `<span class="warn-t">✎ ما لقيتش اسم مكتوب — اكتب اسم المريض</span>`;
+  } else {
+    const top = r.candidates[0] || {}, onX = top.read_as && top.read_as !== top.name ? top.read_as : "";
+    const seen = onX ? ` <span class="muted">(مكتوب على الأشعة: <span class="ltr">${esc(onX)}</span>)</span>` : "";
+    const many = r.candidates.filter(c => c.source === "patient" && c.read_as === top.read_as).length > 1;
+    if (!r.best) status = "";
+    else if (top.source === "translit") status = `<span class="warn-t">✎ مريض جديد — كتبت الاسم بالعربي من «<span class="ltr">${esc(onX)}</span>»، اتأكد من الكتابة</span>`;
+    else if (r.confident) status = `<span class="ok-t">✔ لقيت ${top.source === "patient" ? "المريض" : "الاسم"}</span>${seen}`;
+    else if (many) status = `<span class="warn-t">⚠ فيه أكتر من مريض بالاسم ده — اختار الصح من تحت</span>${seen}`;
+    else status = `<span class="warn-t">⚠ ده اللي قدرت أقراه — اتأكد من الاسم</span>${seen}`;
+  }
+  if (!r.best && !preset) status = `<span class="warn-t">✎ ما لقيتش اسم مكتوب — اكتب اسم المريض</span>`;
   if (r.note) status += ` <span class="muted">(${esc(r.note)})</span>`;
   const years = [...new Set([r.year, ...S.years])].sort().reverse();
   const cands = r.candidates.map((c, i) => `<span class="cand" data-i="${i}" title="${esc(SRC[c.source] || "")}${c.read_as ? " — اتقرا: " + esc(c.read_as) : ""}">
       <span class="pc">${esc(c.name)}</span><small>${esc(SRC[c.source] || "")}</small>
-      ${c.source === "ocr" || c.source === "label" ? '<button class="x" type="button" title="ده مش اسم مريض — تجاهله دايماً">✕</button>' : ""}</span>`).join("");
+      ${c.source === "ocr" ? '<button class="x" type="button" title="ده مش اسم مريض — تجاهله دايماً">✕</button>' : ""}</span>`).join("");
   const same = lastName && !preset && !r.candidates.some(c => key(c.name) === key(lastName))
     ? `<span class="cand" data-same="1"><span class="pc">${esc(lastName)}</span><small>نفس المريض اللي قبله</small></span>` : "";
   el.querySelector(".body").innerHTML = `
