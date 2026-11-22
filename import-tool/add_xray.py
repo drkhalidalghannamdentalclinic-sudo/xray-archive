@@ -376,6 +376,10 @@ def candidates_from(texts_by_source, filename):
                 c["name"] = p["n"]
                 c["score"] = max(c["score"], 0.9 + 0.09 * (r - 0.86) / 0.14)
 
+    # a clear name was found -> drop random words the OCR picked up from inside the picture
+    if any(c["source"] in ("label", "dicom", "patient", "meta") and c["score"] >= 0.9 for c in cands):
+        cands = [c for c in cands if c["source"] != "ocr" or c["score"] >= 0.9]
+
     # merge duplicates produced by snapping
     seen, out = set(), []
     for c in sorted(cands, key=lambda c: -c["score"]):
@@ -408,15 +412,50 @@ DATE_LINE_RE = re.compile(r"(?i)(?:\bdate\b|\bstudy\b|\bexam\b|تاريخ\s*(?:�
 BIRTH_RE = re.compile(r"(?i)birth|dob|d\.o\.b|ميلاد|born")
 
 
-def year_from_ocr(lines):
+DATE_RES = (
+    re.compile(r"(?<!\d)((?:19|20)\d\d)\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*(\d{1,2})(?!\d)"),          # 2026/09/13
+    re.compile(r"(?<!\d)(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*((?:19|20)\d\d)(?!\d)"),          # 13/09/2026
+    re.compile(r"(?<!\d)((?:19|20)\d\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)"),                     # 20260913 (chart no.)
+)
+
+
+def iso_date(y, m, d):
+    try:
+        return datetime(int(y), int(m), int(d)).strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def dates_in(text):
+    out = []
+    t = ascii_digits(text)
+    for i, rx in enumerate(DATE_RES):
+        for m in rx.finditer(t):
+            a, b, c = m.groups()
+            out.append(iso_date(a, b, c) if i != 1 else (iso_date(c, b, a) or iso_date(c, a, b)))
+    return [d for d in out if d]
+
+
+def date_from_ocr(lines):
+    """the X-ray date printed on it (never the birth date). Best: a 'Date:' line, then a line that is only a date,
+    then a date hidden in the chart number (20260913_153830)"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    ranked = []
     for line in lines:
         l = ascii_digits(line)
-        if BIRTH_RE.search(l) or not DATE_LINE_RE.search(l):
+        if BIRTH_RE.search(l):
             continue
-        y = find_year(l)
-        if y:
-            return y
-    return None
+        ds = [d for d in dates_in(l) if "1990-01-01" <= d <= today]
+        if not ds:
+            continue
+        if DATE_LINE_RE.search(l):
+            rank = 0
+        elif re.fullmatch(r"[\d\s/.\-:]+", l.strip()):
+            rank = 1
+        else:
+            rank = 2
+        ranked.append((rank, ds[0]))
+    return min(ranked)[1] if ranked else None
 
 
 # ---------------------------------------------------------------- DICOM (pydicom if installed, else a tiny reader)
@@ -669,11 +708,13 @@ def analyze(item):
     ext = Path(fname).suffix.lower()
     sources, year, year_src, note = [], None, None, None
 
+    xdate = None   # the date the X-ray was taken, when we can tell
     dicom = read_dicom(path) if (ext in DICOM_EXT or ext == "") else {}
     if dicom.get("name"):
         sources.append(("dicom", [dicom_name(dicom["name"])]))
     if dicom.get("date"):
         year, year_src = find_year(dicom["date"]), "تاريخ الأشعة (DICOM)"
+        xdate = (dates_in(dicom["date"]) or [None])[0]
 
     ocr_lines = []
     if ext in IMG_EXT:
@@ -682,13 +723,14 @@ def analyze(item):
             sources.append(("meta", ex["texts"]))
         if not year and ex["date"] and find_year(ex["date"]):
             year, year_src = find_year(ex["date"]), "تاريخ التصوير"
+            xdate = (dates_in(ex["date"].replace(":", "-", 2)) or [None])[0]
         if not dicom.get("name"):
             ocr_lines, note = run_ocr(path, item["dir"])
             sources.append(("ocr", ocr_lines))
             if not year:
-                y = year_from_ocr(ocr_lines)
-                if y:
-                    year, year_src = y, "التاريخ المكتوب على الأشعة"
+                d = date_from_ocr(ocr_lines)
+                if d:
+                    year, year_src, xdate = d[:4], "التاريخ المكتوب على الأشعة", d
     elif ext not in DICOM_EXT:
         note = "نوع الملف ده مش صورة — اكتب الاسم بإيدك"
 
@@ -698,6 +740,7 @@ def analyze(item):
     if not year or not (1990 <= int(year) <= int(this_year) + 1):
         year, year_src = this_year, "السنة الحالية"
 
+    item["xdate"] = xdate if xdate and xdate[:4] == year else None
     cands = candidates_from(sources, fname)
     best = cands[0] if cands else None
     confident = bool(best and best["score"] >= 0.9 and (len(cands) < 2 or cands[1]["score"] < best["score"] - 0.02 or
@@ -708,7 +751,7 @@ def analyze(item):
     return {
         "id": item["id"], "filename": fname, "size": item["size"],
         "candidates": cands, "best": best["name"] if best else "", "confident": confident,
-        "year": year, "year_source": year_src, "ocr_text": ocr_lines[:40], "note": note, "preview": preview,
+        "year": year, "year_source": year_src, "date": item["xdate"], "ocr_text": ocr_lines[:40], "note": note, "preview": preview,
     }
 
 
@@ -803,6 +846,13 @@ def save_item(item, name, year, source=""):
     shutil.copy2(src, dest)
     if os.path.getsize(dest) != size:
         raise IOError("النسخ ما كملش — جرّب تاني")
+    xd = item.get("xdate")
+    if xd and xd[:4] == year:   # file date = the X-ray date (not the day it was downloaded from WhatsApp)
+        try:
+            t = datetime.strptime(xd, "%Y-%m-%d").replace(hour=12).timestamp()
+            os.utime(dest, (t, t))
+        except (ValueError, OSError):
+            pass
 
     reg_add(item.get("reg", ""), dest)
     with lock:  # update the in-memory list right away

@@ -415,7 +415,7 @@ function renderForm(it) {
       <input type="text" class="in nm" list="xi-plist" placeholder="اسم المريض" value="${esc(name)}" autocomplete="off">
       <select class="in yr" title="السنة">${years.map(y => `<option value="${y}"${y === r.year ? " selected" : ""}>${num(y)}</option>`).join("")}<option value="other">سنة تانية…</option></select>
     </div>
-    <div class="muted" style="margin-top:4px">السنة: ${esc(r.year_source || "")}</div>
+    <div class="muted" style="margin-top:4px">السنة: ${esc(r.year_source || "")}${r.date ? ` <span class="ltr">(${esc(r.date.replace(/-/g, "/"))})</span>` : ""}</div>
     ${cands || same ? `<div class="cands">${cands}${same}</div>` : ""}
     <div class="dest"></div>
     <div class="acts"><button class="btn pri save" type="button">💾 حفظ في الأرشيف</button>
