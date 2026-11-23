@@ -40,7 +40,9 @@ except Exception:  # Pillow not installed -> still works, just weaker OCR / no T
     Image = None
     ImageOps = None
 
-TOOL_DIR = Path(__file__).resolve().parent
+TOOL_DIR = Path(__file__).resolve().parent          # ...\import-tool\files
+HOME_DIR = TOOL_DIR.parent                           # ...\import-tool  (the folder the user sees)
+LOG_FILE = TOOL_DIR / "log.txt"
 SETTINGS_FILE = TOOL_DIR / "settings.json"
 STAGING = TOOL_DIR / "_staging"
 PAGE_FILE = TOOL_DIR / "add_xray.html"
@@ -1233,7 +1235,7 @@ REB = None
 # ---------------------------------------------------------------- auto-detect settings on first run
 def autodetect():
     changed = False
-    places = [TOOL_DIR, TOOL_DIR.parent, TOOL_DIR.parent.parent]
+    places = [HOME_DIR, HOME_DIR.parent, HOME_DIR.parent.parent]
     if not CFG.get("rebuild_cmd"):
         for d in places:
             for n in ("rebuild.bat", "Rebuild.bat", "rebuild.cmd"):
@@ -1251,7 +1253,7 @@ def autodetect():
             try:
                 files = [f for f in d.iterdir() if f.is_file() and f.suffix.lower() in
                          (".bat", ".cmd", ".py", ".ps1", ".json", ".ini", ".txt", ".cfg") and f.stat().st_size < 400000
-                         and f.parent != TOOL_DIR]
+                         and f.parent not in (TOOL_DIR, HOME_DIR)]
             except OSError:
                 continue
             for f in files:
@@ -1347,7 +1349,7 @@ def watch_folders():
 def skip_dir(path):
     a = os.path.normcase(os.path.abspath(path))
     arch = os.path.dirname(CFG.get("rebuild_cmd") or "")   # the archive app folder (thumbs / previews live there)
-    for b in (CFG.get("xray_root"), str(TOOL_DIR), arch):
+    for b in (CFG.get("xray_root"), str(HOME_DIR), arch):
         if b:
             b = os.path.normcase(os.path.abspath(b))
             if a == b or a.startswith(b + os.sep):
@@ -1777,5 +1779,22 @@ def main():
         pass
 
 
+def log(msg):
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write("%s  %s\n" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg))
+    except OSError:
+        pass
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        log("start, python %s, settings: %s" % (sys.version.split()[0], json.dumps(CFG, ensure_ascii=False)))
+        main()
+    except Exception:
+        import traceback
+        err = traceback.format_exc()
+        log("CRASH\n" + err)
+        print("\n" + err)
+        print("The tool stopped because of the error above. Send a photo of this window.")
+        sys.exit(1)

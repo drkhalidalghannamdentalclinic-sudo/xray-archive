@@ -37,7 +37,7 @@ async function api(path, body, raw) {
   }
   let r;
   try { r = await fetch(BASE + path, opt); }
-  catch (e) { throw new Error("أداة الإضافة مش شغالة على الكمبيوتر — شغّل add-xray.bat"); }
+  catch (e) { throw new Error("أداة الإضافة مش شغالة على الكمبيوتر — شغّل START - Add X-Ray"); }
   const j = await r.json().catch(() => ({error: "رد غير مفهوم من الأداة"}));
   if (!r.ok) throw new Error(j.error || ("خطأ " + r.status));
   return j;

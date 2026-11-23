@@ -1,4 +1,5 @@
-import-tool/settings.json
-import-tool/_staging/
+import-tool/files/settings.json
+import-tool/files/_staging/
 __pycache__/
-import-tool/imported.json
+import-tool/files/imported.json
+import-tool/files/log.txt

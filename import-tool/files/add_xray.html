@@ -12,6 +12,10 @@ html,body{margin:0;background:var(--bg);color:var(--text)}
 </head>
 <body>
 <!-- the add-X-ray window itself lives in import.js (the same one the archive app opens) -->
+<div id="nofile" style="padding:30px;font:18px Tahoma,sans-serif;line-height:1.9" hidden>
+  ⚠ ده مش الملف اللي يتفتح.<br>اقفل الصفحة دي وارجع لفولدر <b>import-tool</b> ودوس دبل كليك على <b>START - Add X-Ray</b>.
+</div>
+<script>if (location.protocol === "file:") document.getElementById("nofile").hidden = false;</script>
 <script src="/import.js"></script>
 </body>
 </html>
