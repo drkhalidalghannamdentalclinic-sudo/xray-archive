@@ -407,6 +407,57 @@ ping();
 setInterval(() => { if (document.visibilityState === "visible") { const was = serverOK; ping().then(() => { if (was !== serverOK) updateMode(); }); } }, 30000);
 
 { const b = document.getElementById("boot"); if (b) b.remove(); }
+
+/* ---------- add new X-rays: works on the clinic PC, where the import tool (import-tool/add-xray.bat) runs ---------- */
+const defaultImportBase = "http://127.0.0.1:8766";
+let savedImportBase = store.get("importBase");
+if (savedImportBase === "http://127.0.0.1:8765") savedImportBase = defaultImportBase;
+const XI_BASE = savedImportBase || defaultImportBase;
+let xiMode = "";   // "" = tool not running, "in" = opens inside the app, "tab" = opens the tool's own page
+function openImport(p) {
+  if (xiMode === "in" && window.XImport) window.XImport.open({name: p ? p.n : "", onRebuilt: () => location.reload()});
+  else if (xiMode === "tab") window.open(XI_BASE + "/", "xray-import");
+}
+// the buttons are made here when this copy of index.html doesn't have them yet (so only app.js has to be replaced)
+function addBtn(id, label, title, after) {
+  let b = document.getElementById(id);
+  if (!b) {
+    b = document.createElement("button"); b.id = id; b.type = "button"; b.className = "addx"; b.hidden = true;
+    b.textContent = label; if (title) b.title = title;
+    if (after) after.insertAdjacentElement("afterend", b);
+  }
+  return b;
+}
+const addX = addBtn("addX", "＋ إضافة أشعة", "", document.querySelector("#listView .bar h1"));
+const addXp = addBtn("addXp", "＋ أشعة", "إضافة أشعة جديدة للمريض ده", document.querySelector("#patientView .ptitle"));
+if (!document.getElementById("xr-addx-css")) {
+  const st = document.createElement("style"); st.id = "xr-addx-css";
+  st.textContent = ".addx{border:0;background:#3b82f6;color:#fff;font-weight:600;border-radius:99px;padding:7px 14px;font-size:.92rem;white-space:nowrap;cursor:pointer}.addx:hover{background:#60a5fa}#listView .bar h1{flex:1}";
+  document.head.appendChild(st);
+}
+addX.addEventListener("click", () => openImport(null));
+addXp.addEventListener("click", () => openImport(curP));
+async function probeImport() {
+  // only the PC can have the tool; don't make phones knock on 127.0.0.1
+  if (!/Windows|Macintosh|Linux x86/.test(navigator.userAgent) || /Android|iPhone|iPad/.test(navigator.userAgent)) return;
+  try {
+    const r = await fetch(XI_BASE + "/api/hello", {cache: "no-store"});
+    if ((await r.json()).ok) xiMode = "in";
+  } catch (e) {
+    // running, but this page's address is not allowed to talk to it -> open the tool in its own tab
+    try { await fetch(XI_BASE + "/api/hello", {mode: "no-cors", cache: "no-store"}); xiMode = "tab"; } catch (x) {}
+  }
+  if (xiMode === "in" && !window.XImport) {
+    await new Promise((ok, bad) => {
+      const s = document.createElement("script");
+      s.src = XI_BASE + "/import.js?v=" + Date.now(); s.onload = ok; s.onerror = bad;
+      document.head.appendChild(s);
+    }).catch(() => { xiMode = "tab"; });
+  }
+  addX.hidden = addXp.hidden = !xiMode;
+}
+probeImport();
+setInterval(() => { if (!xiMode && document.visibilityState === "visible") probeImport(); }, 60000);
 if (PK && window.XPACK.saved) {
   const a = document.createElement("a"); a.href = "#"; a.textContent = " · تغيير ملف الأرشيف";
   a.style.color = "inherit";
