@@ -1,3 +1,262 @@
+/* ---------- Google Drive: the clinic account keeps the DISPLAY COPIES (previews + thumbnails, never originals).
+   Every device signs in once; new X-rays added anywhere show up everywhere within a minute. ---------- */
+const XGD = (() => {
+  const CLIENT = "177316097322-hqmo3pim5hsd1ii72vfemijkb5c3svg1.apps.googleusercontent.com";
+  const SCOPE = "https://www.googleapis.com/auth/drive.file";   // only the files this app made, not the rest of the Drive
+  const API = "https://www.googleapis.com/drive/v3/files", UP = "https://www.googleapis.com/upload/drive/v3/files";
+  const ls = {
+    get(k, d) { try { const v = localStorage.getItem("xr." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem("xr." + k, JSON.stringify(v)); } catch (e) {} },
+    del(k) { try { localStorage.removeItem("xr." + k); } catch (e) {} }
+  };
+  const ready = /^https?:$/.test(location.protocol) && !/__GD_/.test(CLIENT);
+  const AR = {"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا", "ى": "ي", "ئ": "ي", "ؤ": "و", "ة": "ه"};
+  const nk = s => (s || "").toLowerCase().replace(/[ً-ٰٟـ]/g, "").replace(/[أإآٱىئؤة]/g, c => AR[c]).replace(/\s+/g, " ").trim();
+  const authErr = () => Object.assign(new Error("auth"), {auth: true});
+  let S = null;          // what is on Drive: {root, imgF, idxKey, baseKey, base, base0, I, bimg, files: Map, phone: []}
+  const api = {ready, on: () => ready && !!ls.get("gon"), S: () => S, email: () => ls.get("gmail", ""), onData: null, mode: ""};
+
+  /* ---- sign in: a full-page trip to Google and back (no pop-ups, works in the installed app) */
+  const tokRec = () => ls.get("gtok");
+  const tok = () => { const t = tokRec(); return t && t.exp > Date.now() + 60000 ? t.t : ""; };
+  api.minutesLeft = () => { const t = tokRec(); return t ? Math.floor((t.exp - Date.now()) / 60000) : 0; };
+  api.auth = (interactive, backTo) => {
+    const st = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    sessionStorage.setItem("xr.gst", JSON.stringify({st, hash: backTo !== undefined ? backTo : location.hash}));
+    sessionStorage.setItem("xr.gtry", String(Date.now()));
+    const p = new URLSearchParams({client_id: CLIENT, redirect_uri: location.origin + location.pathname.replace(/index\.html$/, ""),
+      response_type: "token", scope: SCOPE, state: st, include_granted_scopes: "true", prompt: interactive ? "select_account" : "none"});
+    const hint = ls.get("gmail"); if (hint) p.set("login_hint", hint);
+    location.replace("https://accounts.google.com/o/oauth2/v2/auth?" + p);
+    return new Promise(() => {});   // the page is leaving
+  };
+  api.canTrySilent = () => Date.now() - (+sessionStorage.getItem("xr.gtry") || 0) > 60000;
+  api.takeReturn = () => {           // the answer from Google comes back in the address (#access_token=… or #error=…)
+    const h = location.hash.slice(1);
+    if (!/(^|&)(access_token|error)=/.test(h) || !/(^|&)state=/.test(h)) return null;
+    const p = new URLSearchParams(h);
+    let saved = {};
+    try { saved = JSON.parse(sessionStorage.getItem("xr.gst")) || {}; } catch (e) {}
+    history.replaceState(null, "", location.pathname + location.search + (saved.hash || ""));
+    if (!saved.st || p.get("state") !== saved.st) return {error: "state"};
+    if (p.get("access_token")) {
+      ls.set("gtok", {t: p.get("access_token"), exp: Date.now() + (+p.get("expires_in") || 3600) * 1000});
+      ls.set("gon", 1);
+      return {ok: true};
+    }
+    return {error: p.get("error") || "error"};
+  };
+  api.signOut = () => { ls.del("gtok"); ls.del("gon"); ls.del("groot"); ls.del("gmail"); };
+
+  /* ---- Drive calls */
+  async function f(url, opt) {
+    const t = tok();
+    if (!t) throw authErr();
+    opt = Object.assign({}, opt || {});
+    opt.headers = Object.assign({Authorization: "Bearer " + t}, opt.headers || {});
+    const r = await fetch(url, opt);
+    if (r.status === 401) { ls.del("gtok"); throw authErr(); }
+    if (!r.ok) throw new Error("Drive " + r.status);
+    return r;
+  }
+  async function list(q, fields) {
+    let out = [], page = "";
+    do {
+      const p = new URLSearchParams({q, fields: "nextPageToken,files(" + fields + ")", pageSize: "1000", spaces: "drive"});
+      if (page) p.set("pageToken", page);
+      const j = await (await f(API + "?" + p)).json();
+      out = out.concat(j.files || []); page = j.nextPageToken || "";
+    } while (page);
+    return out;
+  }
+  async function range(id, a, b) {
+    const ac = new AbortController();
+    const r = await f(`${API}/${id}?alt=media`, {headers: {Range: `bytes=${a}-${b}`}, signal: ac.signal});
+    if (r.status !== 206) { ac.abort(); throw new Error("range"); }
+    return r.arrayBuffer();
+  }
+  let running = 0; const waiting = [];
+  function queue(fn) {   // at most 6 downloads at a time
+    return new Promise((ok, bad) => {
+      const go = () => { running++; fn().then(ok, bad).finally(() => { running--; if (waiting.length) waiting.shift()(); }); };
+      running < 6 ? go() : waiting.push(go);
+    });
+  }
+
+  /* ---- small cache of the index (works with no internet) */
+  const META = "https://xr.cache/meta/";
+  let metaC = null;
+  const metaCache = () => metaC || (metaC = (self.caches ? caches.open("xr-meta") : Promise.reject()).catch(() => null));
+  async function cached(key, make) {
+    const c = await metaCache();
+    if (c) { const r = await c.match(META + key); if (r) return r.json(); }
+    if (!make) return null;
+    const v = await make();
+    if (c) {
+      const pre = META + key.split(":")[0] + ":";
+      for (const k of await c.keys()) if (k.url.startsWith(pre) && k.url !== META + key) c.delete(k);
+      await c.put(META + key, new Response(JSON.stringify(v), {headers: {"Content-Type": "application/json"}}));
+    }
+    return v;
+  }
+
+  /* ---- read what is on Drive */
+  async function load() {
+    let root = ls.get("groot");
+    if (!root) {
+      const r = await list("appProperties has { key='xr' and value='root' } and trashed=false", "id");
+      if (!r.length) throw Object.assign(new Error("noroot"), {noroot: true});
+      root = r[0].id; ls.set("groot", root);
+    }
+    let kids;
+    try { kids = await list(`'${root}' in parents and trashed=false`, "id,name,modifiedTime,appProperties"); }
+    catch (e) { if (/ 404/.test(e.message)) ls.del("groot"); throw e; }
+    const by = v => kids.find(k => k.appProperties && k.appProperties.xr === v);
+    const idx = by("index"), imgF = by("img");
+    if (!idx || !imgF) throw Object.assign(new Error("noroot"), {noroot: true});
+    const idxKey = "idx:" + idx.id + ":" + idx.modifiedTime;
+    const I = await cached(idxKey, async () => (await f(`${API}/${idx.id}?alt=media`)).json());
+    let bimg = {}, base0 = 0, baseKey = "";
+    if (I.base) {
+      baseKey = "base:" + I.base;
+      const h = await cached(baseKey, async () => {
+        const head = new Uint8Array(await range(I.base, 0, 11));
+        if (new TextDecoder().decode(head.slice(0, 8)) !== "XRPACK1\n") throw new Error("base");
+        const n = new DataView(head.buffer).getUint32(8, true);
+        const j = JSON.parse(new TextDecoder().decode(await range(I.base, 12, 12 + n - 1)));
+        return {img: j.img, base0: 12 + n};
+      });
+      bimg = h.img; base0 = h.base0;
+    }
+    const fl = await list(`'${imgF.id}' in parents and trashed=false`, "id,name,description,appProperties");
+    const files = [], phone = [];
+    for (const x of fl) {
+      const [id, k] = x.name.split(".");
+      files.push([id + "." + k, x.id]);
+      if (x.appProperties && x.appProperties.o === "m" && k === "p" && x.description) {
+        try { phone.push(Object.assign(JSON.parse(x.description), {id})); } catch (e) {}
+      }
+    }
+    const st = {root, imgF: imgF.id, idxKey, baseKey, base: I.base || "", base0, files, phone, at: Date.now()};
+    const c = await metaCache();
+    if (c) c.put(META + "state", new Response(JSON.stringify(st), {headers: {"Content-Type": "application/json"}})).catch(() => {});
+    return Object.assign(st, {I, bimg, files: new Map(files)});
+  }
+  async function loadCached() {
+    const st = await cached("state");
+    if (!st) return null;
+    const I = await cached(st.idxKey);
+    const h = st.baseKey ? await cached(st.baseKey) : {img: {}};
+    if (!I || !h) return null;
+    return Object.assign(st, {I, bimg: h.img, files: new Map(st.files), stale: true});
+  }
+
+  /* ---- the archive = index from the clinic PC + what was added from phones */
+  function merge(D0) {
+    const D = JSON.parse(JSON.stringify(D0));
+    if (!S || !S.phone.length) return D;
+    const by = new Map(D.patients.map(p => [nk(p.n) + "|" + p.y, p]));
+    for (const r of S.phone.slice().sort((a, b) => (a.at || "").localeCompare(b.at || ""))) {
+      const k = nk(r.n) + "|" + r.y;
+      let p = by.get(k);
+      if (!p) {
+        let h = 0; for (const ch of k) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+        p = {i: "m" + h.toString(16), y: r.y, c: "", n: r.n, f: []};
+        by.set(k, p);
+        let at = D.patients.findIndex(q => q.y === r.y && q.n.localeCompare(r.n, "ar") > 0);
+        if (at < 0) { const lastSame = D.patients.map(q => q.y).lastIndexOf(r.y); at = lastSame >= 0 ? lastSame + 1 : D.patients.findIndex(q => /^\d+$/.test(q.y) && q.y < r.y); }
+        at < 0 ? D.patients.push(p) : D.patients.splice(at, 0, p);
+      }
+      // [rel, type, size, date, sub, w, h, imageId, hasPreview, addedOnDrive]
+      p.f.push(["📱/" + (r.fn || "صورة.jpg"), "i", r.s || 0, r.d || "", "", r.w || 0, r.h || 0, r.id, 1, 1]);
+      if (!D.years.includes(r.y)) { D.years.push(r.y); D.years.sort((a, b) => (/^\d+$/.test(b) - /^\d+$/.test(a)) || b.localeCompare(a)); }
+    }
+    return D;
+  }
+  api.data = local => merge(local || S.I.data);
+  api.ignore = () => (S && S.I && S.I.ignore) || [];
+  api.stale = () => !S || !!S.stale;
+  api.has = id => !!S && (!!S.bimg[id] || S.files.has(id + ".t") || S.files.has(id + ".p"));
+  const sig = () => S ? [S.idxKey, S.files.length || S.files.size, S.phone.map(r => r.id).join()].join("|") : "";
+
+  /* start-up: returns false when the page is going to Google for a fresh sign-in */
+  api.boot = async (ret, lite) => {
+    if (ret && ret.error && !tok() && !lite) throw Object.assign(new Error(ret.error), {auth: true, need: true});
+    if (!tok()) {
+      if (navigator.onLine && api.canTrySilent() && !(ret && ret.error)) return api.auth(false);
+      S = await loadCached();
+      if (S) return true;
+      throw Object.assign(new Error("auth"), {auth: true, need: true});
+    }
+    try {
+      S = await load();
+      if (!ls.get("gmail")) f("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)").then(r => r.json()).then(j => ls.set("gmail", j.user.emailAddress)).catch(() => {});
+    } catch (e) {
+      if (e.noroot) throw e;
+      S = await loadCached();
+      if (!S) throw e;
+    }
+    return true;
+  };
+  /* check Drive for news (called every minute) */
+  api.poll = async () => {
+    if (!tok() || !navigator.onLine) return false;
+    const before = sig();
+    try { S = await load(); } catch (e) { return false; }
+    if (sig() !== before && api.onData) api.onData();
+    return true;
+  };
+
+  /* ---- pictures: object URLs, from the device cache first, then from Drive */
+  const mem = new Map();
+  let imgC = null;
+  const imgCache = () => imgC || (imgC = (self.caches ? caches.open("xr-img") : Promise.reject()).catch(() => null));
+  async function fetchImg(id, k) {
+    const b = S.bimg[id];
+    if (b) {
+      let [o, l] = k === "t" ? [b[2], b[3]] : [b[0], b[1]];
+      if (!l) [o, l] = k === "t" ? [b[0], b[1]] : [b[2], b[3]];
+      const start = S.base0 + o;
+      return new Blob([await queue(() => range(S.base, start, start + l - 1))], {type: "image/webp"});
+    }
+    const fid = S.files.get(id + "." + k) || S.files.get(id + "." + (k === "t" ? "p" : "t"));
+    if (!fid) throw new Error("missing");
+    return queue(async () => (await f(`${API}/${fid}?alt=media`)).blob());
+  }
+  api.url = (id, k) => {
+    const key = id + "." + k;
+    let p = mem.get(key);
+    if (p) return p;
+    p = (async () => {
+      const c = await imgCache(), ck = "https://xr.cache/img/" + key;
+      const hit = c && await c.match(ck);
+      const blob = hit ? await hit.blob() : await fetchImg(id, k);
+      if (c && !hit) c.put(ck, new Response(blob, {headers: {"Content-Type": blob.type || "image/webp"}})).catch(() => {});
+      return URL.createObjectURL(blob);
+    })();
+    mem.set(key, p);
+    p.catch(e => { mem.delete(key); if (e && e.auth && api.onAuthLost) api.onAuthLost(); });
+    return p;
+  };
+
+  /* ---- adding / removing (phones, tablets, any PC) */
+  api.upload = async (meta, blob) => {
+    meta = Object.assign({parents: [S.imgF]}, meta);
+    const b = "xrb" + Math.random().toString(36).slice(2);
+    const body = new Blob([`--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`, JSON.stringify(meta),
+      `\r\n--${b}\r\nContent-Type: ${blob.type || "image/jpeg"}\r\n\r\n`, blob, `\r\n--${b}--`]);
+    const r = await f(UP + "?uploadType=multipart&fields=id", {method: "POST", headers: {"Content-Type": "multipart/related; boundary=" + b}, body});
+    return (await r.json()).id;
+  };
+  api.remove = async id => {
+    for (const k of ["p", "t"]) {
+      const fid = S.files.get(id + "." + k);
+      if (fid) await f(`${API}/${fid}?fields=id`, {method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify({trashed: true})});
+    }
+  };
+  return api;
+})();
+
 function startApp() {
 "use strict";
 const D = window.XDATA;
@@ -48,18 +307,38 @@ const origUrl = (f, dl) => "orig/" + f[F.rel].split("#")[0].split("/").map(encod
 const isPic = f => f[F.t] === "i" || f[F.t] === "g";   // g = a rendered PDF page
 const baseName = f => f[F.rel].split("/").pop();
 
-/* ---------- data prep ---------- */
-const P = D.patients;
-const byId = {};
-let totalFiles = 0;
-for (const p of P) {
-  byId[p.i] = p;
-  totalFiles += p.f.length;
-  p.nImg = p.f.filter(isPic).length;
-  p.hay = norm([p.n, p.c, p.y, ...p.f.map(baseName)].join(" "));
-  p.cover = p.f.find(f => f[F.th]) || null;
-  p.last = p.f.reduce((m, f) => f[F.d] > m ? f[F.d] : m, "");
+/* ---------- pictures kept on Google Drive ---------- */
+const GDRIVE = window.XGD_MODE === "drive";            // whole archive from Drive (phones / tablets)
+const GDON = GDRIVE || window.XGD_MODE === "merge";   // local archive + what was added from phones
+const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+const gdImg = f => GDON && !!f[F.th] && (GDRIVE || (f[9] === 1));
+const thSrc = f => gdImg(f) ? `src="${BLANK}" data-gd="${f[F.th]}"` : `src="${thUrl(f)}"`;
+const gdObs = "IntersectionObserver" in window ? new IntersectionObserver(es => {
+  for (const e of es) if (e.isIntersecting) { gdObs.unobserve(e.target); gdLoad(e.target); }
+}, {rootMargin: "400px"}) : null;
+function gdLoad(im) {
+  const id = im.dataset.gd; if (!id) return;
+  delete im.dataset.gd;
+  XGD.url(id, "t").then(u => { im.src = u; }).catch(() => { im.alt = "⚠"; im.classList.add("gderr"); });
 }
+function hydrate(box) { if (GDON) box.querySelectorAll("img[data-gd]").forEach(im => gdObs ? gdObs.observe(im) : gdLoad(im)); }
+
+/* ---------- data prep ---------- */
+let P = D.patients;
+let byId = {};
+let totalFiles = 0;
+function ingest() {
+  byId = {}; totalFiles = 0;
+  for (const p of P) {
+    byId[p.i] = p;
+    totalFiles += p.f.length;
+    p.nImg = p.f.filter(isPic).length;
+    p.hay = norm([p.n, p.c, p.y, ...p.f.map(baseName)].join(" "));
+    p.cover = p.f.find(f => f[F.th]) || null;
+    p.last = p.f.reduce((m, f) => f[F.d] > m ? f[F.d] : m, "");
+  }
+}
+ingest();
 
 let serverOK = false;
 const state = Object.assign({year: "all", q: "", sort: "name", origOn: true}, store.get("state", {}));
@@ -95,7 +374,7 @@ function renderYears() {
 }
 
 function cardHTML(p) {
-  const img = p.cover ? `<img loading="lazy" decoding="async" src="${thUrl(p.cover)}" alt="">` : `<span class="ph">${p.f[0] ? KIND[p.f[0][F.t]] : "🖼️"}</span>`;
+  const img = p.cover ? `<img loading="lazy" decoding="async" ${thSrc(p.cover)} alt="">` : `<span class="ph">${p.f[0] ? KIND[p.f[0][F.t]] : "🖼️"}</span>`;
   const parts = [/^\d+$/.test(p.y) ? num(p.y) : p.y];
   if (p.c) parts.push(p.c);
   const nImg = p.nImg ? `${num(p.nImg)} صورة` : "";
@@ -119,6 +398,7 @@ function renderList(reset) {
   }
   const part = curList.slice(0, shown);
   el.list.innerHTML = part.map(cardHTML).join("");
+  hydrate(el.list);
   el.more.hidden = shown >= curList.length;
 }
 
@@ -175,11 +455,12 @@ function showPatient(p) {
       html += '<div class="tiles">'; open = true; lastSub = sub;
     }
     const t = f[F.t];
-    const inner = f[F.th] ? `<img loading="lazy" decoding="async" src="${thUrl(f)}" alt="">` : `<span class="kind">${KIND[t] || "📎"}</span>`;
-    html += `<button type="button" class="tile" data-i="${i}"><div class="cover">${inner}</div><div class="tn">${esc(baseName(f))}</div></button>`;
+    const inner = f[F.th] ? `<img loading="lazy" decoding="async" ${thSrc(f)} alt="">` : `<span class="kind">${KIND[t] || "📎"}</span>`;
+    html += `<button type="button" class="tile" data-i="${i}"><div class="cover">${inner}</div><div class="tn">${f[9] ? "📱 " : ""}${esc(baseName(f))}</div></button>`;
   });
   if (open) html += "</div>";
   $("#files").innerHTML = html;
+  hydrate($("#files"));
   window.scrollTo(0, 0);
 }
 $("#files").addEventListener("click", e => {
@@ -218,6 +499,21 @@ function closeViewerUI() {
   if (V.viewer.hidden) return;
   V.viewer.hidden = true; document.body.style.overflow = "";
   vvid.pause(); vvid.removeAttribute("src"); vimg.removeAttribute("src"); vIdx = -1;
+  if (pendingData) setTimeout(applyData, 0);
+}
+
+/* new X-rays arrived from Drive: refresh the lists, but never under the user's fingers in the viewer */
+let pendingData = false;
+function applyData() {
+  if (!V.viewer.hidden) { pendingData = true; return; }
+  pendingData = false;
+  const nd = XGD.data(GDRIVE ? null : window.XLOCAL);
+  D.years = nd.years; D.built = nd.built || D.built;
+  P = D.patients = nd.patients;
+  ingest();
+  renderList(false);
+  footText();
+  if (curP && !V.patient.hidden) { const id = curP.i; curP = null; if (byId[id]) showPatient(byId[id]); else location.hash = "#/"; }
 }
 function setQuality(txt, cls) { const q = $("#vquality"); q.textContent = txt; q.className = "chip " + (cls || ""); }
 
@@ -233,9 +529,20 @@ function showFile(p, i) {
   $("#openOrig").hidden = true;
   const useOrig = serverOK && state.origOn && t === "i";
   $("#origBtn").classList.toggle("on", state.origOn);
-  $("#origBtn").hidden = !serverOK || t === "g";
+  $("#origBtn").hidden = !serverOK || t === "g" || f[9] === 1;
+  gdDel.hidden = f[9] !== 1;
 
-  if (t === "i" || t === "g") {
+  if ((t === "i" || t === "g") && gdImg(f)) {
+    resetView(true);
+    vimg.hidden = false;
+    vimg.onerror = null;
+    vimg.src = BLANK;
+    setQuality("جاري التحميل…", "warn");
+    let gotPv = false;
+    XGD.url(f[F.th], "t").then(u => { if (tok === loadTok && !gotPv) vimg.src = u; }).catch(() => {});
+    XGD.url(f[F.th], "p").then(u => { if (tok === loadTok) { gotPv = true; vimg.src = u; setQuality(t === "g" ? "صفحة PDF" : (f[9] ? "📱 نسخة العرض" : "معاينة"), "warn"); } })
+      .catch(() => { if (tok === loadTok) setQuality(navigator.onLine ? "الصورة ما اتحملتش" : "مفيش إنترنت", "warn"); });
+  } else if (t === "i" || t === "g") {
     resetView(true);
     vimg.hidden = false;
     const low = pvUrl(f) || thUrl(f);
@@ -269,8 +576,20 @@ function showFile(p, i) {
     vother.innerHTML = `<div class="kind">${KIND[t] || "📎"}</div><div>${KIND_NAME[t] || "ملف"}</div><div class="muted" style="direction:ltr;word-break:break-all">${esc(f[F.rel])}</div>${link}`;
   }
   // preload next thumb/preview
-  const nx = p.f[i + 1]; if (nx && isPic(nx)) { const im = new Image(); im.src = pvUrl(nx) || thUrl(nx); }
+  const nx = p.f[i + 1];
+  if (nx && isPic(nx)) { if (gdImg(nx)) XGD.url(nx[F.th], "p").catch(() => {}); else { const im = new Image(); im.src = pvUrl(nx) || thUrl(nx); } }
 }
+const gdDel = document.createElement("button");
+gdDel.type = "button"; gdDel.textContent = "🗑️ حذف"; gdDel.hidden = true; gdDel.title = "حذف الصورة دي (اتضافت من موبايل/تابلت)";
+$("#vtools").appendChild(gdDel);
+gdDel.addEventListener("click", async () => {
+  const p = curP, f = p && p.f[vIdx];
+  if (!f || f[9] !== 1 || !confirm("تحذف الصورة دي من الأرشيف؟ (هتتشال من كل الأجهزة)")) return;
+  gdDel.disabled = true;
+  try { await XGD.remove(f[F.th]); closeViewer(); await XGD.poll(); }
+  catch (e) { alert("الحذف ما تمش: " + (e.message || e)); }
+  gdDel.disabled = false;
+});
 
 function go(d) {
   if (!curP || vIdx < 0) return;
@@ -369,6 +688,13 @@ document.addEventListener("keydown", e => {
 
 /* ---------- router ---------- */
 function route() {
+  const a = location.hash.match(/^#\/add(?:\/([a-z0-9]+))?/);   // back from a Google sign-in made just to add X-rays
+  if (a) {
+    history.replaceState(null, "", a[1] && byId[a[1]] ? "#/p/" + a[1] : "#/");
+    route();
+    setTimeout(() => openMAdd(a[1] ? byId[a[1]] : null), 300);
+    return;
+  }
   const m = location.hash.match(/^#\/p\/([a-z0-9]+)(?:\/(\d+))?/);
   if (!m) { closeViewerUI(); showList(); return; }
   const p = byId[m[1]];
@@ -382,13 +708,20 @@ window.addEventListener("hashchange", () => { if (location.hash.length > 3) from
 
 /* ---------- boot ---------- */
 function updateMode() {
+  if (GDRIVE) {
+    const off = !navigator.onLine || XGD.stale();
+    el.mode.textContent = off ? "بدون إنترنت · المحفوظ على الجهاز" : "جوجل درايف ✔";
+    el.mode.className = "chip " + (off ? "warn" : "ok");
+    el.mode.title = XGD.email();
+    return;
+  }
   if (EMB) { el.mode.textContent = window.XLITE ? "نسخة خفيفة · بدون إنترنت" : "نسخة مستقلة · بدون إنترنت"; el.mode.className = "chip ok"; el.mode.title = "الصور جوه الملف نفسه"; }
   else if (location.protocol === "file:") { el.mode.textContent = "بدون سيرفر · معاينات"; el.mode.className = "chip warn"; el.mode.title = "الأصلية متاحة لما تشغّل البرنامج على الكمبيوتر"; }
   else if (serverOK) { el.mode.textContent = "الأصلية متاحة ✔"; el.mode.className = "chip ok"; }
   else { el.mode.textContent = "معاينات فقط"; el.mode.className = "chip warn"; el.mode.title = "السيرفر مش شغّال — الأصلية مش متاحة"; }
 }
 async function ping() {
-  if (EMB || !/^https?:$/.test(location.protocol)) return updateMode();
+  if (GDRIVE || EMB || !/^https?:$/.test(location.protocol)) return updateMode();
   try {
     const r = await fetch("api/ping", {cache: "no-store"});
     const j = r.ok ? await r.json() : null;
@@ -399,7 +732,11 @@ async function ping() {
 }
 
 el.sort.value = state.sort;
-el.foot.textContent = `${num(P.length)} مريض/مجموعة · ${num(totalFiles)} ملف · آخر تحديث للفهرس: ${D.built}`;
+const footInfo = document.createElement("span");
+el.foot.textContent = "";
+el.foot.appendChild(footInfo);
+function footText() { footInfo.textContent = `${num(P.length)} مريض/مجموعة · ${num(totalFiles)} ملف · آخر تحديث للفهرس: ${D.built}`; }
+footText();
 updateMode();
 renderList(true);
 route();
@@ -417,6 +754,33 @@ let xiMode = "";   // "" = tool not running, "in" = opens inside the app, "tab" 
 function openImport(p) {
   if (xiMode === "in" && window.XImport) window.XImport.open({name: p ? p.n : "", onRebuilt: () => location.reload()});
   else if (xiMode === "tab") window.open(XI_BASE + "/", "xray-import");
+  else if (GDON) openMAdd(p);
+}
+/* any device: the display copy goes to the clinic Google Drive, the original stays on the device */
+let maddP = null;
+async function openMAdd(p) {
+  if (!GDON) return;
+  if (!navigator.onLine) return alert("محتاج إنترنت عشان تضيف أشعة.");
+  if (XGD.minutesLeft() < 15) return XGD.auth(false, "#/add" + (p ? "/" + p.i : ""));   // fresh sign-in first, then the dialog opens again
+  try {
+    if (!window.XMAdd) {
+      maddP = maddP || new Promise((ok, bad) => {
+        const s = document.createElement("script");
+        s.src = "madd.js?v=" + (window.XAPP_V || "1"); s.onload = ok; s.onerror = () => { maddP = null; bad(new Error("madd")); };
+        document.head.appendChild(s);
+      });
+      await maddP;
+    }
+  } catch (e) { return alert("شاشة الإضافة ما اتحملتش — اتأكد من النت وجرّب تاني."); }
+  window.XMAdd.open({
+    name: p ? p.n : "", year: p ? p.y : "", patients: P, ignore: XGD.ignore(), upload: XGD.upload,
+    onDone: async (name, year) => {
+      await XGD.poll();
+      applyData();
+      const k = norm(name), hit = P.find(q => q.y === year && norm(q.n) === k);
+      if (hit) location.hash = "#/p/" + hit.i;
+    }
+  });
 }
 // the buttons are made here when this copy of index.html doesn't have them yet (so only app.js has to be replaced)
 function addBtn(id, label, title, after) {
@@ -437,6 +801,7 @@ if (!document.getElementById("xr-addx-css")) {
 }
 addX.addEventListener("click", () => openImport(null));
 addXp.addEventListener("click", () => openImport(curP));
+addX.hidden = addXp.hidden = !GDON;
 async function probeImport() {
   // only the PC can have the tool; don't make phones knock on 127.0.0.1
   if (!/Windows|Macintosh|Linux x86/.test(navigator.userAgent) || /Android|iPhone|iPad/.test(navigator.userAgent)) return;
@@ -454,11 +819,46 @@ async function probeImport() {
       document.head.appendChild(s);
     }).catch(() => { xiMode = "tab"; });
   }
-  addX.hidden = addXp.hidden = !xiMode;
+  addX.hidden = addXp.hidden = !xiMode && !GDON;
 }
 probeImport();
 setInterval(() => { if (!xiMode && document.visibilityState === "visible") probeImport(); }, 60000);
+/* ---------- Google Drive: keep up to date, links in the footer ---------- */
+const footLink = (txt, fn) => {
+  const a = document.createElement("a"); a.href = "#"; a.textContent = " · " + txt; a.style.color = "inherit";
+  a.onclick = e => { e.preventDefault(); fn(); }; el.foot.appendChild(a); return a;
+};
+if (GDON) {
+  XGD.onData = applyData;
+  XGD.onAuthLost = () => {   // the 1-hour Google pass ran out while pictures were loading
+    if (!V.viewer.hidden || document.getElementById("xma") || !navigator.onLine || !XGD.canTrySilent()) return updateMode();
+    XGD.auth(false);
+  };
+  const tick = () => { if (document.visibilityState === "visible") XGD.poll().then(updateMode); };
+  setInterval(tick, 60000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (XGD.minutesLeft() < 2 && navigator.onLine && V.viewer.hidden && !document.getElementById("xma") && XGD.canTrySilent()) return XGD.auth(false);
+    tick();
+  });
+  window.addEventListener("online", tick);
+  window.addEventListener("offline", updateMode);
+  footLink("حساب جوجل: " + (XGD.email() || "…"), () => {
+    if (confirm("تخرج من حساب جوجل على الجهاز ده؟ (هتحتاج تدخل تاني عشان تشوف الأرشيف)")) { XGD.signOut(); location.reload(); }
+  });
+  if (GDRIVE) navigator.storage && navigator.storage.getDirectory && navigator.storage.getDirectory()
+    .then(r => r.getFileHandle("archive.xrpack")).then(h => h.getFile()).then(f => {
+      footLink(`مسح ملف الأرشيف القديم من الجهاز (${Math.round(f.size / 1048576)} ميجا)`, async () => {
+        if (!confirm("ملف الأرشيف القديم مبقاش له لازمة (الأرشيف بقى من جوجل درايف). تمسحه وتوفّر المساحة؟")) return;
+        try { (await navigator.storage.getDirectory()).removeEntry("archive.xrpack"); } catch (x) {}
+        location.reload();
+      });
+    }).catch(() => {});
+} else if (XGD.ready && !EMB && !PK) {
+  footLink("ربط بجوجل درايف (عشان تظهر الأشعة اللي اتضافت من الموبايل)", () => XGD.auth(true));
+}
 if (PK && window.XPACK.saved) {
+  if (XGD.ready) footLink("استخدم جوجل درايف بدل الملف (الأشعة الجديدة توصل لوحدها)", () => XGD.auth(true, "#/"));
   const a = document.createElement("a"); a.href = "#"; a.textContent = " · تغيير ملف الأرشيف";
   a.style.color = "inherit";
   a.onclick = async e => { e.preventDefault(); if (!confirm("تشيل ملف الأرشيف المحفوظ وتختار واحد جديد؟")) return;
@@ -471,10 +871,48 @@ if ((!EMB || PK) && "serviceWorker" in navigator && /^https?:$/.test(location.pr
 }
 
 /* ---------- loader: embedded data, or an archive pack picked by the user ---------- */
+window.XAPP_V = "4";
 (async () => {
-  if (window.XDATA) return startApp();
+  const gret = XGD.ready ? XGD.takeReturn() : null;   // coming back from a Google sign-in?
+  if (window.XDATA) {
+    // the clinic PC's own archive: also show what was added from phones (when this PC is linked to Drive)
+    if (XGD.on() || (gret && gret.ok)) {
+      try {
+        if (await XGD.boot(gret, true)) {
+          window.XLOCAL = window.XDATA;
+          window.XDATA = XGD.data(window.XLOCAL);
+          window.XGD_MODE = "merge";
+        }
+      } catch (e) {}
+    }
+    return startApp();
+  }
   const boot = document.getElementById("boot");
   const say = h => { if (boot) boot.innerHTML = `<div style="text-align:center;padding:24px;max-width:420px;line-height:1.9">${h}</div>`; };
+  const gesc = s => String(s).replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
+  const BTN = "display:block;width:100%;border:0;border-radius:14px;padding:15px;font-size:1.05rem;font-weight:700;cursor:pointer;margin-top:14px";
+  /* ---- the archive from the clinic Google Drive (the normal way on phones / tablets) */
+  if (XGD.ready && (XGD.on() || gret)) {
+    say("جاري فتح الأرشيف من جوجل درايف…");
+    try {
+      if (await XGD.boot(gret, false)) {
+        window.XDATA = XGD.data();
+        window.XGD_MODE = "drive";
+        return startApp();
+      }
+      return;
+    } catch (e) {
+      const why = e.noroot ? `الحساب ده (${gesc(XGD.email() || "اللي دخلت بيه")}) مفيهوش أرشيف الأشعة. ادخل بحساب العيادة.`
+        : e.auth ? "محتاج تدخل بحساب جوجل بتاع العيادة."
+        : navigator.onLine ? "الأرشيف ما اتفتحش (" + gesc(e.message || e) + ")." : "مفيش إنترنت، والأرشيف لسه ما اتحفظش على الجهاز ده.";
+      say(`<div style="font-size:1.3rem;color:#e8edf7;margin-bottom:8px">أرشيف الأشعة</div>${why}
+        <button id="gsign" type="button" style="${BTN};background:#3b82f6;color:#fff">دخول بحساب جوجل</button>
+        <button id="gretry" type="button" style="${BTN};background:#1e293b;color:#cbd5e1">حاول تاني</button>`);
+      document.getElementById("gsign").onclick = () => { if (e.noroot) XGD.signOut(); XGD.auth(true, "#/"); };
+      document.getElementById("gretry").onclick = () => location.reload();
+      return;
+    }
+  }
   async function openPack(file, saved) {
     const head = new Uint8Array(await file.slice(0, 12).arrayBuffer());
     if (new TextDecoder().decode(head.slice(0, 8)) !== "XRPACK1\n") throw new Error("bad");
@@ -490,8 +928,10 @@ if ((!EMB || PK) && "serviceWorker" in navigator && /^https?:$/.test(location.pr
     try { const f = await (await root.getFileHandle("archive.xrpack")).getFile(); if (f.size > 12) return await openPack(f, true); } catch (e) {}
   }
   const pick = msg => {
-    say(`<div style="font-size:1.3rem;color:#e8edf7;margin-bottom:8px">أرشيف الأشعة</div>${msg || "اختار ملف الأرشيف <b>XRay Archive.xrpack</b> من على الجهاز."}
-      <div style="margin-top:18px;background:#3b82f6;border-radius:14px;padding:14px">
+    say(`<div style="font-size:1.3rem;color:#e8edf7;margin-bottom:8px">أرشيف الأشعة</div>${msg || (XGD.ready ? "ادخل بحساب جوجل بتاع العيادة، والأرشيف هيفتح ويتحدث لوحده." : "اختار ملف الأرشيف <b>XRay Archive.xrpack</b> من على الجهاز.")}
+      ${XGD.ready ? `<button id="gsign" type="button" style="${BTN};background:#3b82f6;color:#fff">دخول بحساب جوجل</button>
+      <div style="font-size:.85rem;margin-top:22px">أو اختار ملف أرشيف <b>.xrpack</b> من على الجهاز (من غير تحديث تلقائي):</div>` : ""}
+      <div style="margin-top:${XGD.ready ? 8 : 18}px;background:${XGD.ready ? "#1e293b" : "#3b82f6"};border-radius:14px;padding:14px">
       <input id="pk" type="file" style="width:100%;color:#fff;font-size:1rem"></div>
       <div id="pkst" style="font-size:.9rem;margin-top:12px;min-height:1.5em"></div>
       ${root ? '<div style="font-size:.8rem;margin-top:6px">هيتحفظ على الجهاز، ومش هتحتاج تختاره تاني.</div>' : ""}`);
@@ -508,6 +948,8 @@ if ((!EMB || PK) && "serviceWorker" in navigator && /^https?:$/.test(location.pr
     };
     const inp = document.getElementById("pk");
     inp.onchange = e => onFile(e.target.files[0]);
+    const gs = document.getElementById("gsign");
+    if (gs) gs.onclick = () => XGD.auth(true, "#/");
     boot.ondragover = e => e.preventDefault();
     boot.ondrop = e => { e.preventDefault(); onFile(e.dataTransfer.files[0]); };
   };
