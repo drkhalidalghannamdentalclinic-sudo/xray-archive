@@ -75,12 +75,44 @@ const XGD = (() => {
     if (r.status !== 206) { ac.abort(); throw new Error("range"); }
     return r.arrayBuffer();
   }
+  /* downloads: several at a time, the NEWEST request first (= what is on the screen now),
+     and a picture that left the screen (another year was picked, the list was scrolled) is skipped */
+  const MAXQ = 10;
   let running = 0; const waiting = [];
-  function queue(fn) {   // at most 6 downloads at a time
+  const skipErr = () => Object.assign(new Error("skip"), {skip: true});
+  function next() { while (running < MAXQ && waiting.length) waiting.pop()(); }
+  function queue(fn, still) {
     return new Promise((ok, bad) => {
-      const go = () => { running++; fn().then(ok, bad).finally(() => { running--; if (waiting.length) waiting.shift()(); }); };
-      running < 6 ? go() : waiting.push(go);
+      const go = () => {
+        if (still && !still()) return bad(skipErr());
+        running++; fn().then(ok, bad).finally(() => { running--; next(); });
+      };
+      waiting.push(go); next();
     });
+  }
+  /* pictures that sit next to each other inside the archive file come in ONE download instead of one each */
+  const GAP = 96 * 1024, SPAN = 2 * 1024 * 1024;
+  let pend = [], pendT = 0;
+  function rangeB(start, len, still) {
+    return new Promise((ok, bad) => {
+      pend.push({start, len, ok, bad, still});
+      if (!pendT) pendT = setTimeout(flush, 20);
+    });
+  }
+  function flush() {
+    pendT = 0;
+    const all = pend.filter(r => !r.still || r.still() || (r.bad(skipErr()), false)).sort((a, b) => a.start - b.start);
+    pend = [];
+    const groups = [];
+    let g = null;
+    for (const r of all) {
+      if (g && r.start - g.end <= GAP && r.start + r.len - g.start <= SPAN) { g.items.push(r); g.end = Math.max(g.end, r.start + r.len); }
+      else { g = {start: r.start, end: r.start + r.len, items: [r]}; groups.push(g); }
+    }
+    for (const g of groups.reverse())   // the queue takes the newest first, so push the first pictures last
+      queue(() => range(S.base, g.start, g.end - 1), () => g.items.some(r => !r.still || r.still())).then(buf => {
+        for (const r of g.items) r.ok(new Blob([buf.slice(r.start - g.start, r.start - g.start + r.len)], {type: "image/webp"}));
+      }, e => g.items.forEach(r => r.bad(e)));
   }
 
   /* ---- small cache of the index (works with no internet) */
@@ -211,31 +243,30 @@ const XGD = (() => {
   const mem = new Map();
   let imgC = null;
   const imgCache = () => imgC || (imgC = (self.caches ? caches.open("xr-img") : Promise.reject()).catch(() => null));
-  async function fetchImg(id, k) {
+  async function fetchImg(id, k, still) {
     const b = S.bimg[id];
     if (b) {
       let [o, l] = k === "t" ? [b[2], b[3]] : [b[0], b[1]];
       if (!l) [o, l] = k === "t" ? [b[0], b[1]] : [b[2], b[3]];
-      const start = S.base0 + o;
-      return new Blob([await queue(() => range(S.base, start, start + l - 1))], {type: "image/webp"});
+      return rangeB(S.base0 + o, l, still);
     }
     const fid = S.files.get(id + "." + k) || S.files.get(id + "." + (k === "t" ? "p" : "t"));
     if (!fid) throw new Error("missing");
-    return queue(async () => (await f(`${API}/${fid}?alt=media`)).blob());
+    return queue(async () => (await f(`${API}/${fid}?alt=media`)).blob(), still);
   }
-  api.url = (id, k) => {
+  api.url = (id, k, still) => {
     const key = id + "." + k;
     let p = mem.get(key);
     if (p) return p;
     p = (async () => {
       const c = await imgCache(), ck = "https://xr.cache/img/" + key;
       const hit = c && await c.match(ck);
-      const blob = hit ? await hit.blob() : await fetchImg(id, k);
+      const blob = hit ? await hit.blob() : await fetchImg(id, k, still);
       if (c && !hit) c.put(ck, new Response(blob, {headers: {"Content-Type": blob.type || "image/webp"}})).catch(() => {});
       return URL.createObjectURL(blob);
     })();
     mem.set(key, p);
-    p.catch(e => { mem.delete(key); if (e && e.auth && api.onAuthLost) api.onAuthLost(); });
+    p.catch(e => { mem.delete(key); if (e && e.auth && !e.skip && api.onAuthLost) api.onAuthLost(); });
     return p;
   };
 
@@ -319,7 +350,12 @@ const gdObs = "IntersectionObserver" in window ? new IntersectionObserver(es => 
 function gdLoad(im) {
   const id = im.dataset.gd; if (!id) return;
   delete im.dataset.gd;
-  XGD.url(id, "t").then(u => { im.src = u; }).catch(() => { im.alt = "⚠"; im.classList.add("gderr"); });
+  im.classList.add("gdl");
+  XGD.url(id, "t", () => im.isConnected).then(u => { im.src = u; im.classList.remove("gdl"); }).catch(e => {
+    im.classList.remove("gdl");
+    if (e && e.skip) { im.dataset.gd = id; return; }   // left the screen before its turn: loads again if it comes back
+    im.alt = "⚠"; im.classList.add("gderr");
+  });
 }
 function hydrate(box) { if (GDON) box.querySelectorAll("img[data-gd]").forEach(im => gdObs ? gdObs.observe(im) : gdLoad(im)); }
 
@@ -884,7 +920,7 @@ if ((!EMB || PK) && "serviceWorker" in navigator && /^https?:$/.test(location.pr
 }
 
 /* ---------- loader: embedded data, or an archive pack picked by the user ---------- */
-window.XAPP_V = "6";
+window.XAPP_V = "7";
 (async () => {
   const gret = XGD.ready ? XGD.takeReturn() : null;   // coming back from a Google sign-in?
   if (window.XDATA) {
