@@ -755,7 +755,11 @@ function openImport(p) {
   if (xiMode === "in" && window.XImport) window.XImport.open({name: p ? p.n : "", onRebuilt: () => location.reload()});
   else if (xiMode === "tab") window.open(XI_BASE + "/", "xray-import");
   else if (GDON) openMAdd(p);
+  else if (GDCAN && confirm("عشان تضيف أشعة، لازم تدخل بحساب جوجل بتاع العيادة مرة واحدة.\nبعدها الأرشيف هيفتح من جوجل درايف والأشعة الجديدة توصل لوحدها.\n\nتدخل دلوقتي؟"))
+    XGD.auth(true, "#/add" + (p ? "/" + p.i : ""));
 }
+// archive opened from a saved .xrpack file on a web address: the add button still shows, and signs in to Drive first
+const GDCAN = !GDON && XGD.ready;
 /* any device: the display copy goes to the clinic Google Drive, the original stays on the device */
 let maddP = null;
 async function openMAdd(p) {
@@ -801,7 +805,7 @@ if (!document.getElementById("xr-addx-css")) {
 }
 addX.addEventListener("click", () => openImport(null));
 addXp.addEventListener("click", () => openImport(curP));
-addX.hidden = addXp.hidden = !GDON;
+addX.hidden = addXp.hidden = !GDON && !GDCAN;
 async function probeImport() {
   // only the PC can have the tool; don't make phones knock on 127.0.0.1
   if (!/Windows|Macintosh|Linux x86/.test(navigator.userAgent) || /Android|iPhone|iPad/.test(navigator.userAgent)) return;
@@ -819,7 +823,7 @@ async function probeImport() {
       document.head.appendChild(s);
     }).catch(() => { xiMode = "tab"; });
   }
-  addX.hidden = addXp.hidden = !xiMode && !GDON;
+  addX.hidden = addXp.hidden = !xiMode && !GDON && !GDCAN;
 }
 probeImport();
 setInterval(() => { if (!xiMode && document.visibilityState === "visible") probeImport(); }, 60000);
@@ -871,7 +875,7 @@ if ((!EMB || PK) && "serviceWorker" in navigator && /^https?:$/.test(location.pr
 }
 
 /* ---------- loader: embedded data, or an archive pack picked by the user ---------- */
-window.XAPP_V = "4";
+window.XAPP_V = "5";
 (async () => {
   const gret = XGD.ready ? XGD.takeReturn() : null;   // coming back from a Google sign-in?
   if (window.XDATA) {
