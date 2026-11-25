@@ -800,7 +800,9 @@ const addX = addBtn("addX", "＋ إضافة أشعة", "", document.querySelecto
 const addXp = addBtn("addXp", "＋ أشعة", "إضافة أشعة جديدة للمريض ده", document.querySelector("#patientView .ptitle"));
 if (!document.getElementById("xr-addx-css")) {
   const st = document.createElement("style"); st.id = "xr-addx-css";
-  st.textContent = ".addx{border:0;background:#3b82f6;color:#fff;font-weight:600;border-radius:99px;padding:7px 14px;font-size:.92rem;white-space:nowrap;cursor:pointer}.addx:hover{background:#60a5fa}#listView .bar h1{flex:1}";
+  st.textContent = ".addx{border:0;background:#3b82f6;color:#fff;font-weight:600;border-radius:99px;padding:7px 14px;font-size:.92rem;white-space:nowrap;cursor:pointer}.addx:hover{background:#60a5fa}#listView .bar h1{flex:1}"
+    + ".gdbar{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;margin:8px 0 2px;padding:8px 12px;border-radius:14px;background:#3d2d0a;border:1px solid #a16207;color:#fde68a;font-size:.92rem;line-height:1.6}"
+    + ".gdbar span{flex:1 1 200px}.gdbar button{border:0;background:#3b82f6;color:#fff;font-weight:700;border-radius:99px;padding:9px 18px;font-size:.95rem;cursor:pointer;white-space:nowrap}.gdbar button:hover{background:#60a5fa}";
   document.head.appendChild(st);
 }
 addX.addEventListener("click", () => openImport(null));
@@ -858,11 +860,18 @@ if (GDON) {
         location.reload();
       });
     }).catch(() => {});
-} else if (XGD.ready && !EMB && !PK) {
-  footLink("ربط بجوجل درايف (عشان تظهر الأشعة اللي اتضافت من الموبايل)", () => XGD.auth(true));
+} else if (GDCAN && (PK || !EMB)) {
+  // not signed in to Drive yet: say so at the TOP of the page, where everyone sees it
+  const gb = document.createElement("div"); gb.id = "gdbar"; gb.className = "gdbar";
+  const t = document.createElement("span");
+  t.textContent = PK ? "ادخل بحساب جوجل بتاع العيادة عشان تظهر الأشعة الجديدة وتقدر تضيف أشعة."
+    : "ادخل بحساب جوجل بتاع العيادة عشان تظهر الأشعة اللي اتضافت من الموبايل.";
+  const gbtn = document.createElement("button"); gbtn.type = "button"; gbtn.textContent = "دخول بحساب جوجل";
+  gbtn.onclick = () => XGD.auth(true, "#/");
+  gb.append(t, gbtn);
+  document.querySelector("#listView .bar").insertAdjacentElement("afterend", gb);
 }
 if (PK && window.XPACK.saved) {
-  if (XGD.ready) footLink("استخدم جوجل درايف بدل الملف (الأشعة الجديدة توصل لوحدها)", () => XGD.auth(true, "#/"));
   const a = document.createElement("a"); a.href = "#"; a.textContent = " · تغيير ملف الأرشيف";
   a.style.color = "inherit";
   a.onclick = async e => { e.preventDefault(); if (!confirm("تشيل ملف الأرشيف المحفوظ وتختار واحد جديد؟")) return;
@@ -875,7 +884,7 @@ if ((!EMB || PK) && "serviceWorker" in navigator && /^https?:$/.test(location.pr
 }
 
 /* ---------- loader: embedded data, or an archive pack picked by the user ---------- */
-window.XAPP_V = "5";
+window.XAPP_V = "6";
 (async () => {
   const gret = XGD.ready ? XGD.takeReturn() : null;   // coming back from a Google sign-in?
   if (window.XDATA) {
